@@ -1,4 +1,6 @@
 vim9script
+g:typing_summary_grace_ms = 0
+g:typing_resume = 'never'
 # Integration tests for autoload/typing/session.vim.
 # Sessions are driven with feedkeys(..., 'xt'); every test ends idle, in a single
 # tab, with no popups and no extra timers. History always goes to a temp file.
@@ -25,6 +27,7 @@ def FakeClock(): float
 enddef
 
 def ResetOptions()
+  g:typing_summary_grace_ms = 0
   g:typing_on_error = 'stay'
   g:typing_line_end = 'either'
   g:typing_skip_non_ascii = false
@@ -361,7 +364,8 @@ def Test_restart()
   assert_equal(before.buf, s.buf)
   assert_equal(2, tabpagenr('$'))
   assert_true(s.status_id > 0)
-  assert_equal(1, len(popup_list()))
+  # The status popup and transparent lifecycle guard both remain active.
+  assert_equal(2, len(popup_list()))
 
   feedkeys('abc', 'xt')
   sleep 20m
@@ -832,3 +836,145 @@ Test_history_threshold_counts_keys()
 Test_start_failure()
 Test_settings_frozen_on_restart()
 ClearHistory()
+
+# A single drained typeahead batch must never become Normal-mode commands.
+def Test_typeahead_escape()
+  var t0 = Fresh()
+  g:typing_summary_grace_ms = 10000
+  var origin = Origin(['abcdef'])
+  TypingStart
+  var practice = session.State().buf
+  feedkeys("abc\<Esc>q:ix\<Esc>", 'xt')
+  sleep 20m
+  assert_equal('', reg_recording(), 'typeahead escaped the popup key sink')
+  assert_equal('n', mode())
+  assert_equal('', getcmdwintype())
+  assert_equal(['abcdef'], getbufline(practice, 1, '$'))
+  assert_equal(['abcdef'], getbufline(origin, 1, '$'))
+  assert_false(getbufvar(origin, '&modified'))
+  assert_equal('summary', session.State().phase)
+  assert_true(session.State().summary_id > 0)
+  session.Stop()
+  CheckClean(t0)
+enddef
+
+Test_typeahead_escape()
+
+# Includes Ctrl-C while only the transition guard is filtering input.
+def Test_typeahead_completion()
+  for tail in ["rq:ix\<Esc>", "\<C-c>\<C-c>rq:ix\<Esc>"]
+    var t0 = Fresh()
+    g:typing_summary_grace_ms = 10000
+    var origin = Origin(['abc'])
+    TypingStart
+    var practice = session.State().buf
+    feedkeys('abc' .. tail, 'xt')
+    sleep 20m
+    assert_equal('', reg_recording())
+    assert_equal('n', mode())
+    assert_equal('', getcmdwintype())
+    assert_equal(['abc'], getbufline(practice, 1, '$'))
+    assert_equal(['abc'], getbufline(origin, 1, '$'))
+    assert_false(getbufvar(origin, '&modified'))
+    assert_equal('summary', session.State().phase)
+    assert_equal(3, session.State().st.pos)
+    assert_true(session.State().summary_id > 0)
+    session.Stop()
+    CheckClean(t0)
+  endfor
+enddef
+
+def Test_summary_transition_batches()
+  for action in ['x', 'r', "\<C-c>"]
+    var t0 = Fresh()
+    Origin(['abc'])
+    TypingStart
+    feedkeys('abc', 'xt')
+    sleep 20m
+    var practice = session.State().buf
+    feedkeys(action .. "\<C-c>q:ix\<Esc>", 'xt')
+    # Before the deferred tab close, the entire queued batch is swallowed.
+    assert_equal(['abc'], getbufline(practice, 1, '$'))
+    assert_equal('', reg_recording())
+    assert_equal('', getcmdwintype())
+    assert_equal('n', mode())
+    sleep 20m
+    if action == 'r'
+      assert_equal('typing', session.State().phase)
+      assert_equal(0, session.State().st.pos)
+      session.Stop()
+      session.Stop()
+    endif
+    CheckClean(t0)
+    # Keys arriving AFTER the tab is fully closed are ordinary Vim input.
+    feedkeys("iZ\<Esc>", 'xt')
+    assert_equal(['Zabc'], getline(1, '$'))
+    assert_true(&modified)
+  endfor
+enddef
+
+def Test_summary_grace()
+  for grace in [10000, 0, 60]
+    var t0 = Fresh()
+    g:typing_summary_grace_ms = grace
+    Origin(['abc'])
+    TypingStart
+    # Settings are frozen at Start.
+    g:typing_summary_grace_ms = 0
+    feedkeys('abc', 'xt')
+    sleep 20m
+    if grace > 0
+      feedkeys('rx', 'xt')
+      sleep 5m
+      assert_equal('summary', session.State().phase)
+      assert_equal(3, session.State().st.pos)
+      if grace == 10000
+        feedkeys("\<C-c>q:ix\<Esc>", 'xt')
+        sleep 20m
+        assert_equal('summary', session.State().phase)
+        assert_true(!empty(popup_getpos(session.State().summary_id)))
+      else
+        sleep 80m
+        feedkeys('x', 'xt')
+        sleep 20m
+        assert_equal('idle', session.State().phase)
+      endif
+    else
+      feedkeys('x', 'xt')
+      sleep 20m
+      assert_equal('idle', session.State().phase)
+    endif
+    if session.State().phase != 'idle'
+      session.Stop()
+    endif
+    CheckClean(t0)
+  endfor
+enddef
+
+Test_typeahead_completion()
+Test_summary_transition_batches()
+Test_summary_grace()
+
+# The default is 500 ms, measured from appearance, with no extra grace timer.
+def Test_summary_default_clock()
+  var t0 = Fresh()
+  unlet g:typing_summary_grace_ms
+  session.SetClock(FakeClock)
+  fake_now = 10.0
+  Origin(['abc'])
+  TypingStart
+  feedkeys('abc', 'xt')
+  sleep 20m
+  fake_now = 10.499
+  feedkeys('r', 'xt')
+  sleep 20m
+  assert_equal('summary', session.State().phase)
+  assert_equal(3, session.State().st.pos)
+  assert_equal([], timer_info())
+  fake_now = 10.501
+  feedkeys('x', 'xt')
+  sleep 20m
+  CheckClean(t0)
+enddef
+
+Test_summary_default_clock()

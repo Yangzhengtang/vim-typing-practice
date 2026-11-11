@@ -30,7 +30,8 @@ The full design, the decisions agreed with the owner, and the milestones are in
 | [autoload/typing/render.vim](autoload/typing/render.vim) | Text properties (dim, wrong, fixed, cursor, `↵` marker), blink timer, terminal cursor hide/restore. |
 | [autoload/typing/ui.vim](autoload/typing/ui.vim) | Status popup (also the key sink), warning flash, summary popup, text formatting. |
 | [autoload/typing/history.vim](autoload/typing/history.vim) | JSONL append/load, totals, the `:TypingHistory` view. |
-| [autoload/typing/session.vim](autoload/typing/session.vim) | Lifecycle: scratch tab, key filter, finish/restart/close/abort, cleanup. |
+| [autoload/typing/progress.vim](autoload/typing/progress.vim) | Resume positions: JSON file keyed by absolute path, text fingerprint. |
+| [autoload/typing/session.vim](autoload/typing/session.vim) | Lifecycle: resume prompt, scratch tab, key filter, guard popup across transitions, finish/restart/close/abort, cleanup. |
 | [doc/typing.txt](doc/typing.txt) | `:help typing-practice`. |
 | [test/](test/) | `run.sh` (headless runner with a per-file watchdog), `harness.vim`, one `test_*.vim` per module plus `test_integration.vim`. |
 | [spike/](spike/) | Feasibility scripts behind PLAN.md section 3. Not loaded by the plugin. |
@@ -51,42 +52,62 @@ Tests that write history must point `g:typing_history_file` at a temporary file.
 ## Constraints
 
 - Never modify the practised buffer or its file. Tests assert this.
-- Session history is user data. It lives outside the repository (default
-  `~/.vim/typing-practice/history.jsonl`) and must not be committed or used as a
-  test fixture.
+- Session history and resume positions are user data. They live outside the
+  repository (defaults `~/.vim/typing-practice/history.jsonl` and
+  `progress.json`; the latter holds absolute file paths) and must not be
+  committed, read for documentation or used as test fixtures. The owner has
+  real history there. `test/harness.vim` points both files at temporary paths.
+- During a session no typed key may reach Normal mode, including in the gaps
+  between popups (PLAN.md section 5.1, "Key sink across transitions").
 - Installing into `~/.vim/pack` changes the user's Vim setup; do it only on request.
 - Any change that hides the terminal cursor must restore it on every exit path.
 
 ## Status
 
-**2026-11-11 — milestones M0–M4 implemented, M5 partly; first commit made on this date.**
+**2026-11-11 — milestones M0–M4 and M6 (resume) implemented, M5 partly.**
+Two commits on this date: the first version (M0–M4), then resume, the
+key-sink fix and the summary grace period.
 
 Checks actually performed on this date, Vim 9.1.1752 on macOS inside tmux:
 
-- `./test/run.sh`: 8 files passed (143 test functions plus the load test).
-  The runner was shown to report a failing assertion (exit 1) and to kill and
-  report a hanging test (`timed out`).
-- Real-terminal run in an isolated tmux server, keys sent with `tmux
-  send-keys`, once per error mode on a four-line sample with indentation, a
-  blank line and curly quotes. Observed: pending text dim, typed text normal,
-  wrong character red, warning text in the status popup, cursor cell
-  alternating between captures, terminal cursor hidden while typing, corrected
-  character underlined amber, summary popup, terminal cursor visible again
-  after closing, sample file checksum unchanged, and one history record
-  written to a temporary file. In the `advance` run the end state was also
-  read from inside Vim: one tab, no popups, no timers, `t_ve` restored, buffer
-  unmodified.
+- `./test/run.sh`: 10 files passed, also with `TERM=dumb` and with `TERM`
+  unset. The runner was shown to report a failing assertion (exit 1) and to
+  kill and report a hanging test (`timed out`).
+- Real-terminal runs in an isolated tmux server, keys sent with `tmux
+  send-keys`:
+  - First version, once per error mode, on a four-line sample with
+    indentation, a blank line and curly quotes: pending text dim, typed text
+    normal, wrong character red, warning text in the status popup, cursor cell
+    alternating between captures, terminal cursor hidden while typing,
+    corrected character underlined amber, summary popup, sample file checksum
+    unchanged, one history record written to a temporary file.
+  - Resume: stop midway with Esc (summary shows `Position saved`), entry
+    written to a temporary progress file, `:TypingStart` shows the menu,
+    Enter resumes at the saved character with earlier text in normal colour
+    and progress 47%, finishing empties the progress file and writes a record
+    with `start` 28. End state read from inside Vim: one tab, no popups, no
+    timers, `t_ve` restored, buffer unmodified.
+  - Key sink: Esc immediately followed by `q:ix`, and the full text followed
+    by overshoot keys `rq:i`. In both the summary was showing afterwards, with
+    no macro recording, no command-line window and no restart. Before the fix
+    the first sequence started a macro recording and left the session unusable.
 - `:helptags doc` exits 0.
+
+Known behaviour: in a terminal Vim recognises Esc only after its key-code
+timeout (up to one second with default settings); Ctrl-C is immediate. The help
+file explains `ttimeoutlen`.
 
 Not checked: input through a real input method; GUI Vim; a real terminal
 resize; a colorscheme change during a session; large files; the summary popup
-in a terminal shorter than about 20 rows (it needs a scrollbar at 12 rows).
+in a terminal shorter than about 22 rows. In the tmux runs keys arrive in
+bursts, so the WPM figures there are meaningless.
 Not done: installation into `~/.vim/pack` (only on request).
 
 How it was built: modules were written by delegated agents against the
-contract in PLAN.md section 5.1, then reviewed and re-tested here. One fix made
-after the agents' work: progress is characters passed ÷ total (it was
-characters correct ÷ total), with a regression test.
+contract in PLAN.md section 5.1, then reviewed and re-tested here. Fixes that
+came out of that review: progress is characters passed ÷ total; the key sink
+across transitions; the summary grace period; the runner's watchdog and
+terminal-type default.
 
 ## Next step
 

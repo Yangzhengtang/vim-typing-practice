@@ -132,10 +132,31 @@ export def Build(lines: list<string>, opts: dict<any> = {}): dict<any>
   return {
     targets: targets,
     pos: 0,
+    start: 0,
     standing: 0,
     on_error: on_error,
     done: empty(targets)
   }
+enddef
+
+# Only called before the first Feed.
+export def StartAt(st: dict<any>, index: number)
+  var pos = max([0, min([index, len(st.targets) - 1])])
+  for i in range(pos)
+    st.targets[i].state = 'skipped'
+  endfor
+  st.pos = pos
+  st.start = pos
+  st.standing = 0
+enddef
+
+export def IndexAtLine(st: dict<any>, lnum: number): number
+  for i in range(len(st.targets))
+    if st.targets[i].lnum >= lnum
+      return i
+    endif
+  endfor
+  return -1
 enddef
 
 def Event(st: dict<any>, kind: string, changed: list<number>,
@@ -184,7 +205,7 @@ export def Feed(st: dict<any>, key: string): dict<any>
   var k = key == "\n" ? "\r" : key
 
   if IsBackspace(k)
-    if st.on_error != 'advance' || st.pos <= 0
+    if st.on_error != 'advance' || st.pos <= st.start
       return Event(st, 'ignored', [], '', '')
     endif
     var changed: list<number> = []

@@ -845,3 +845,21 @@ Test_ignored_event_keeps_props_stable()
 Test_setup_with_break_current_and_done()
 Test_advance_backspace_off_break_keeps_marker()
 Test_long_session_invariants()
+
+def Test_resume_setup()
+  var b = NewBuf(['ab', 'cde'])
+  var st = engine.Build(['ab', 'cde'])
+  engine.StartAt(st, 4)
+  render.Setup(b, st)
+  assert_equal([], PendingOn(b, 1))
+  assert_equal('TypingBreakCorrect', Breaks(b, 1)[0].type)
+  assert_equal([[2, 2]], PendingOn(b, 2))
+  assert_equal([], filter(Props(b, 2), (_, p) => p.col < 2))
+  Type(b, st, 'd')
+  assert_equal([[3, 1]], PendingOn(b, 2))
+  assert_equal(1, st.standing)
+  render.Teardown(b)
+  execute 'bwipeout! ' .. b
+enddef
+
+Test_resume_setup()

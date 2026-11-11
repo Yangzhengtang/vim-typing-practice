@@ -31,7 +31,7 @@ augroup TypingPracticeHighlights
   autocmd ColorScheme * DefineHighlights()
 augroup END
 
-command! -range=% -bar TypingStart session.Start(<line1>, <line2>)
+command! -range=% -bang -bar TypingStart session.Start(<line1>, <line2>, <bang>0)
 command! -bar TypingStop session.Stop()
 command! -bar TypingHistory session.History()
 

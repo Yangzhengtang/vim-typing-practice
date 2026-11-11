@@ -5,6 +5,9 @@
 # TEST_TIMEOUT seconds (default 120) so a Vim waiting for input cannot hang the run.
 
 cd "$(dirname "$0")/.." || exit 1
+# The render tests compare screen attributes, which need a colour terminal type
+# even though no terminal is attached.
+case "${TERM:-dumb}" in dumb|unknown) TERM=xterm-256color; export TERM ;; esac
 root=$(pwd)
 [ $# -eq 0 ] && set -- test/test_*.vim
 

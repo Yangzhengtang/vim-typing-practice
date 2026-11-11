@@ -7,14 +7,22 @@ vim9script
 import autoload 'typing/engine.vim'
 import autoload 'typing/stats.vim'
 import autoload 'typing/history.vim'
+import autoload 'typing/progress.vim'
 import autoload 'typing/render.vim'
 import autoload 'typing/ui.vim'
 
 const AUGROUP = 'TypingPracticeSession'
 const TICK_MS = 1000
 
-# Public phases are 'idle', 'typing' and 'summary'. Transient work is guarded by
+# Public phases are 'idle', 'prompt', 'typing' and 'summary'. Work is guarded by
 # `cleaning` instead, so State() never shows an internal phase.
+var start = 0
+var prompt_id = -1
+var path = ''
+var resume_mode = 'ask'
+var progress_file = ''
+var fingerprint = ''
+var origin_tabstop = 8
 var phase = 'idle'
 var cleaning = false
 
@@ -30,6 +38,9 @@ var origin_winid = 0
 var origin_tail = ''
 var first_line = 0
 var last_line = 0
+var guard_id = -1
+var summary_grace_ms = 500
+var summary_deadline = 0.0
 var status_id = -1
 var summary_id = -1
 var tick_timer = -1
@@ -91,15 +102,18 @@ def ReadOptions(): dict<any>
 enddef
 
 def ReadSettings()
+  summary_grace_ms = max([0, get(g:, 'typing_summary_grace_ms', 500) + 0])
   blink_ms = get(g:, 'typing_blink_ms', 500) + 0
   bell = get(g:, 'typing_bell', false) ? true : false
   idle_seconds = get(g:, 'typing_idle_seconds', 5) + 0.0
   history_enabled = get(g:, 'typing_history', true) ? true : false
   history_file = get(g:, 'typing_history_file', history.DefaultFile())
   min_keys = get(g:, 'typing_history_min_keys', 20) + 0
+  resume_mode = get(g:, 'typing_resume', 'ask')
+  progress_file = progress.DefaultFile()
 enddef
 
-export def Start(line1: number, line2: number)
+export def Start(line1: number, line2: number, fresh: bool = false)
   if phase != 'idle' || cleaning
     Echo('WarningMsg', 'vim-typing-practice: a typing session is already active')
     return
@@ -107,6 +121,8 @@ export def Start(line1: number, line2: number)
 
   origin_winid = win_getid()
   var name = bufname()
+  path = name == '' ? '' : fnamemodify(name, ':p')
+  start = 0
   origin_tail = name == '' ? '[No Name]' : fnamemodify(name, ':t')
   lines = getline(line1, line2)
   first_line = line1
@@ -119,6 +135,7 @@ export def Start(line1: number, line2: number)
     lines = []
     origin_winid = 0
     opts = {}
+    path = ''
     Echo('WarningMsg', 'nothing to type')
     return
   endif
@@ -129,10 +146,98 @@ export def Start(line1: number, line2: number)
   last_record = {}
   last_saved = false
   last_summary = []
-  var tabstop = &tabstop
+  origin_tabstop = &tabstop
+  fingerprint = progress.Fingerprint(lines)
+  var candidate = fresh || resume_mode == 'never' || path == ''
+    ? {} : progress.Get(progress_file, path)
+  OpenGuard()
+  var resume = ResumeIndex(candidate)
+  if resume >= 0
+    if resume_mode == 'always'
+      start = resume
+    else
+      phase = 'prompt'
+      var changed = get(candidate, 'hash', '') != fingerprint
+        || get(candidate, 'total', 0) != len(st.targets)
+      var label = changed ? 'text changed'
+        : printf('%d%%', float2nr(round(resume * 100.0 / len(st.targets))))
+      var lnum = changed ? candidate.lnum : st.targets[resume].lnum + first_line - 1
+      prompt_id = ui.ShowChoice(' Typing practice ',
+        [$'Resume at line {lnum} ({label})', 'Start from the beginning'],
+        (pick: number) => OnChoice(pick, resume))
+      return
+    endif
+  endif
+  BeginPractice()
+enddef
 
+# A global, fully masked popup stays below the interactive popups across tab
+# changes. Hidden popups do not filter keys; a masked visible popup does.
+def OpenGuard()
+  guard_id = popup_create('', {
+    line: 1, col: 1, minwidth: 1, minheight: 1,
+    mask: [[1, 1, 1, 1]], tabpage: -1, zindex: 1, mapping: false,
+    filter: (_: number, key: string): bool => true,
+    callback: (id: number, result: any) => {
+      if id == guard_id && result == -1
+        # Ctrl-C bypasses filters. Re-arm synchronously before more input;
+        # the already scheduled transition still owns its eventual cleanup.
+        OpenGuard()
+      endif
+    }
+  })
+enddef
+
+def CloseGuard()
+  var id = guard_id
+  guard_id = -1
+  ClosePopupId(id)
+enddef
+
+# Treat malformed entries as absent. Line numbers are in the origin buffer.
+def ResumeIndex(entry: dict<any>): number
+  for key in ['line1', 'line2', 'pos', 'total', 'lnum']
+    if type(get(entry, key, '')) != v:t_number
+      return -1
+    endif
+  endfor
+  if type(get(entry, 'hash', 0)) != v:t_string
+    return -1
+  endif
+  if entry.line1 != first_line || entry.line2 != last_line
+      || entry.pos <= 0 || entry.pos >= entry.total
+    return -1
+  endif
+  if get(entry, 'hash', '') == fingerprint && entry.total == len(st.targets)
+    return entry.pos
+  endif
+  if entry.lnum < first_line || entry.lnum > last_line
+    return -1
+  endif
+  return engine.IndexAtLine(st, entry.lnum - first_line + 1)
+enddef
+
+def OnChoice(pick: number, resume: number)
+  if phase != 'prompt' || cleaning
+    return
+  endif
+  prompt_id = -1
+  if pick == 0
+    Cleanup()
+    return
+  endif
+  start = pick == 1 ? resume : 0
+  Defer(() => {
+    if phase == 'prompt' && !cleaning
+      BeginPractice()
+    endif
+  })
+enddef
+
+def BeginPractice()
+  engine.StartAt(st, start)
   try
-    if !OpenPractice(tabstop)
+    if !OpenPractice(origin_tabstop)
       Cleanup()
       return
     endif
@@ -141,7 +246,7 @@ export def Start(line1: number, line2: number)
     render.StartBlink(blink_ms)
     MoveCursor()
 
-    snums = stats.New({idle_seconds: idle_seconds, total: len(st.targets)})
+    snums = stats.New({idle_seconds: idle_seconds, total: len(st.targets), pos: start})
     status_id = ui.OpenStatus(winid, Filter, OnStatusClosed)
     ui.SetStatus(status_id, ui.StatusText(stats.Snapshot(snums, Now())))
     StartTick()
@@ -282,7 +387,8 @@ def BuildRecord(snap: dict<any>, completed: bool): dict<any>
     line1: first_line,
     line2: last_line,
     duration: snap.elapsed,
-    chars: snap.pos,
+    start: start,
+    chars: snap.pos - start,
     wpm: snap.wpm,
     raw_wpm: snap.raw_wpm,
     accuracy: snap.accuracy,
@@ -321,8 +427,27 @@ def Finish(completed: bool)
   if history_enabled && snap.keystrokes >= min_keys
     last_saved = history.Append(history_file, last_record)
   endif
-  last_summary = ui.SummaryLines(snap, top, hist, completed)
+  last_summary = ui.SummaryLines(snap, top, hist, completed, SavePosition(completed))
   ShowSummary()
+enddef
+
+# Return a summary line only after a successful write.
+def SavePosition(completed: bool): string
+  if path == '' || resume_mode == 'never'
+    return ''
+  endif
+  if completed
+    progress.Remove(progress_file, path)
+  elseif st.pos > start && st.pos < len(st.targets)
+    var lnum = st.targets[st.pos].lnum + first_line - 1
+    var entry = {line1: first_line, line2: last_line, pos: st.pos,
+      total: len(st.targets), lnum: lnum, hash: fingerprint, time: localtime()}
+    if progress.Save(progress_file, path, entry)
+      return printf('Position saved: line %d (%d%%)', lnum,
+        float2nr(round(st.pos * 100.0 / len(st.targets))))
+    endif
+  endif
+  return ''
 enddef
 
 # Track the single pending lifecycle transition so cleanup can cancel it.
@@ -351,9 +476,15 @@ enddef
 def ShowSummary()
   Defer(() => {
     if phase == 'summary' && !cleaning
-      summary_id = ui.ShowSummary(last_summary, OnSummaryKey)
+      summary_deadline = Now() + summary_grace_ms / 1000.0
+      OpenSummary()
     endif
   })
+enddef
+
+def OpenSummary()
+  summary_id = ui.ShowSummary(last_summary, OnSummaryKey,
+    (): bool => Now() >= summary_deadline)
 enddef
 
 def OnSummaryKey(key: string)
@@ -361,6 +492,12 @@ def OnSummaryKey(key: string)
     return
   endif
   summary_id = -1
+  if Now() < summary_deadline
+    # Ctrl-C force-closes popups even during grace. The guard covers the
+    # deferred replacement, which retains the original deadline.
+    Defer(() => OpenSummary())
+    return
+  endif
   Defer(() => {
     if key == 'r'
       Restart()
@@ -380,7 +517,8 @@ def Restart()
   summary_id = -1
   started_at = localtime()
   st = engine.Build(lines, opts)
-  snums = stats.New({idle_seconds: idle_seconds, total: len(st.targets)})
+  engine.StartAt(st, start)
+  snums = stats.New({idle_seconds: idle_seconds, total: len(st.targets), pos: start})
   last_record = {}
   last_saved = false
   last_summary = []
@@ -419,6 +557,7 @@ def OnVimLeave()
   # Vim will not service a deferred tab close during shutdown.
   CancelDeferred()
   CloseTabNow(practice_win, origin_win)
+  CloseGuard()
   cleaning = false
   render.RestoreTerminalCursor()
 enddef
@@ -452,6 +591,7 @@ enddef
 # Save an unfinished session under the same rules as a finished one, without a
 # summary popup.
 def SaveIncomplete()
+  SavePosition(false)
   var snap = stats.Snapshot(snums, Now())
   last_record = BuildRecord(snap, false)
   last_saved = false
@@ -512,6 +652,9 @@ def Cleanup()
     var sid = summary_id
     summary_id = -1
     ClosePopupId(sid)
+    var pid = prompt_id
+    prompt_id = -1
+    ClosePopupId(pid)
     ClearAutocmds()
   finally
     phase = 'idle'
@@ -530,6 +673,8 @@ def Cleanup()
     summary_id = -1
     tick_timer = -1
     mode = 'stay'
+    start = 0
+    path = ''
   endtry
 
   # Leave/wipe autocommands and popup filters must unwind before tab changes.
@@ -537,6 +682,7 @@ def Cleanup()
     try
       CloseTabNow(practice_win, origin_win)
     finally
+      CloseGuard()
       cleaning = false
     endtry
   })
@@ -566,7 +712,7 @@ enddef
 export def Stop()
   if phase == 'typing'
     Finish(false)
-  elseif phase == 'summary'
+  elseif phase == 'summary' || phase == 'prompt'
     Close()
   else
     Echo('WarningMsg', 'no typing session')
@@ -580,6 +726,9 @@ enddef
 export def State(): dict<any>
   return {
     phase: phase,
+    start: start,
+    prompt_id: prompt_id,
+    path: path,
     buf: buf,
     winid: winid,
     tabnr: tabnr,

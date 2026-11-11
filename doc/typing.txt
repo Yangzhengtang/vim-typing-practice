@@ -12,6 +12,7 @@ CONTENTS                                                    *typing-contents*
     Statistics                 |typing-statistics|
     Summary                    |typing-summary|
     History                    |typing-history|
+    Resume                     |typing-resume|
     Options                    |typing-options|
     Highlights                 |typing-highlights|
     Limitations                |typing-limitations|
@@ -46,18 +47,20 @@ COMMANDS AND MAPPING                                        *typing-commands*
 
                                                               *:TypingStart*
 :TypingStart            Practise the entire current buffer.
+:TypingStart!           Start from the beginning without a resume offer.
 :{range}TypingStart     Practise the specified lines. Examples: >
     :'<,'>TypingStart
     :.,$TypingStart
 <
 The first example uses a Visual selection; even a partial-line selection
-practises whole lines. Starting while a session or summary is active is
-refused. If no targets remain after skipping whitespace and optional
+practises whole lines. Starting while a session, prompt or summary is active
+is refused. If no targets remain after skipping whitespace and optional
 non-ASCII characters, the command reports "nothing to type".
 
                                                                *:TypingStop*
 :TypingStop             Stop typing and show the summary. If the summary is
-                        already open, close it. If idle, report that there
+                        already open, close it. Cancel a resume prompt.
+                        If idle, report that there
                         is no typing session.
 
                                                             *:TypingHistory*
@@ -99,6 +102,13 @@ judged, even when incorrect at the current position. Esc and Ctrl-C end the
 session and show the summary. Keys bypass user mappings: colon is typing
 input, not a command prompt. :TypingStop is also a programmatic stop command.
 
+Keys arriving during popup or tab transitions are swallowed. In a terminal,
+Esc is recognised only after Vim's key-code timeout: 'ttimeoutlen', or
+'timeoutlen' when 'ttimeoutlen' is -1 (up to one second with default
+settings). Ctrl-C stops immediately. To make Esc fast, put this in your
+vimrc: >
+    set ttimeout ttimeoutlen=50
+<
 Reaching the last target ends the session immediately, including a wrong
 last key in advance mode. Leaving the practice window, buffer or tab, or
 wiping the practice buffer, aborts without a summary and saves an unfinished
@@ -182,6 +192,10 @@ with uncorrected errors still shows 100% progress; the errors lower net WPM.
 ==============================================================================
 SUMMARY                                                     *typing-summary*
 
+For the first 500 ms after the summary appears, keys are swallowed so that
+extra typing cannot dismiss it or restart. Set |g:typing_summary_grace_ms|
+to change this grace period or disable it with 0.
+
 On completion, Esc, Ctrl-C or :TypingStop, a centred popup shows the result:
 time, net and raw WPM, CPM, accuracy, keystrokes, errors, longest streak,
 characters and most-missed keys. Space is displayed as ␣, Enter as ↵, and
@@ -213,7 +227,8 @@ Record fields:
     file         Original filename tail only, or "[No Name]".
     line1,line2  Inclusive original line range, numbered from 1.
     duration     Timed seconds, as defined in |typing-statistics|.
-    chars        Position: targets passed, including wrong ones in advance.
+    start        Starting target index (zero unless resumed).
+    chars        Position minus start, including wrong targets in advance.
     wpm          Net WPM.
     raw_wpm      Raw WPM.
     accuracy     Correct judged inputs as a percentage of all judged inputs.
@@ -233,6 +248,48 @@ trend runs oldest to newest for the displayed records, scaled to their own
 minimum and maximum. Missing/unreadable files show no history; malformed JSON
 lines and non-object values are skipped. Turning saving off does not prevent
 :TypingHistory from reading existing records.
+
+==============================================================================
+RESUME                                                       *typing-resume*
+
+Stopping early on a named file saves the position if you moved beyond the
+session's starting point. Esc, Ctrl-C, :TypingStop and leaving the practice
+tab all save under this rule. Finishing the text deletes its saved position.
+Stopping without advancing preserves an existing entry. Unnamed buffers
+save nothing. A successful save adds "Position saved: line N (P%)" to the
+summary.
+
+The next :TypingStart on the same absolute file path and line range offers
+"Resume at line N (P%)" or "Start from the beginning". Use j/k or the arrow
+keys to select, then Enter. Esc or Ctrl-C cancels and starts nothing. During
+this "prompt" phase no practice tab is open; another start is refused and
+:TypingStop cancels. The copied lines are those captured when :TypingStart
+ran, even if the buffer changes before you choose.
+
+If the text fingerprint or target count changed, the offer says "text
+changed" and resumes at the first target on the saved line, or the next line
+with text. An invalid saved position, a different range or no remaining
+target on or after that line produces no offer.
+
+Earlier text appears typed, but counts toward neither keystrokes nor speed,
+accuracy or errors. Progress and Characters still show the position in the
+whole text. In advance mode Backspace stops at the resume point. Summary r
+restarts from that same point with fresh statistics.
+
+Use :TypingStart! (also with a range) to start from the beginning without
+asking. |g:typing_resume| can resume automatically or disable the feature.
+Bang skips the offer; subsequent saves follow the usual rules.
+
+Positions are stored in |g:typing_progress_file|, independently of history
+and its minimum keystroke count. This JSON object is keyed by absolute file
+path; entries contain line1, line2, pos, total, lnum, hash and time. The line
+number is in the original buffer. Parent directories are created as needed;
+writes use a temporary file in the same directory followed by rename.
+Failed writes do not throw and do not show a saved-position summary line.
+
+Privacy: this file stores absolute file paths locally, along with positions,
+text fingerprints and timestamps. It does not store the practice text.
+Delete the progress file to forget all positions.
 
 ==============================================================================
 OPTIONS                                                     *typing-options*
@@ -265,6 +322,11 @@ g:typing_skip_non_ascii     Boolean, default v:false.
 g:typing_blink_ms           Number, default 500.
     Blink half-period in milliseconds. Zero or negative gives a steady marker.
 
+                                                 *g:typing_summary_grace_ms*
+g:typing_summary_grace_ms   Number, default 500.
+    Ignore summary keys for this many milliseconds after it appears.
+    Zero disables the grace period. Read at session start, kept on restart.
+
                                                              *g:typing_bell*
 g:typing_bell               Boolean, default v:false.
     Emit the terminal bell character on a wrong key.
@@ -273,6 +335,17 @@ g:typing_bell               Boolean, default v:false.
 g:typing_idle_seconds       Number or Float, default 5.
     Gaps longer than this many seconds are excluded entirely from timing.
     See |typing-statistics| for the open-gap behaviour.
+
+                                                           *g:typing_resume*
+g:typing_resume             String, default 'ask'.
+    'ask' offers a menu; 'always' resumes without asking; 'never' neither
+    saves nor offers positions. See |typing-resume|.
+
+                                                    *g:typing_progress_file*
+g:typing_progress_file      String.
+    Default: expanded ~/.vim/typing-practice/progress.json
+    Custom paths are literal; expand a leading tilde yourself. Stores
+    absolute file paths locally; see the privacy note in |typing-resume|.
 
                                                           *g:typing_history*
 g:typing_history            Boolean, default v:true.

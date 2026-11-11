@@ -98,7 +98,7 @@ enddef
 # The summary popup text. `snap` is a stats.Snapshot, `top` a stats.TopMissed,
 # `hist` a history.Summarize of the sessions before this one.
 export def SummaryLines(snap: dict<any>, top: list<dict<any>>,
-    hist: dict<any>, completed: bool): list<string>
+    hist: dict<any>, completed: bool, saved: string = ''): list<string>
   var main: list<list<any>> = [
     ['Time', FormatTime(AsFloat(get(snap, 'elapsed', 0.0)))],
     ['WPM (net)', printf('%.1f', AsFloat(get(snap, 'wpm', 0.0)))],
@@ -137,6 +137,9 @@ export def SummaryLines(snap: dict<any>, top: list<dict<any>>,
     add(out, LabelLine(pair[0], pair[1], width))
   endfor
 
+  if saved != ''
+    add(out, saved)
+  endif
   add(out, 'Most-missed keys')
   if empty(top)
     add(out, '  no mistakes')
@@ -312,18 +315,38 @@ enddef
 
 # Centred summary popup. The first key closes it and is passed to `OnKey`;
 # Ctrl-C does the same with "\<C-c>". `OnKey` is called exactly once.
-export def ShowSummary(lines: list<string>, OnKey: func(string)): number
+# Optional Accept gates filtered keys; Ctrl-C bypasses filters, so its caller
+# must handle a forced close even when Accept is false.
+export def ShowSummary(lines: list<string>, OnKey: func(string),
+    Accept: func(): bool = (): bool => true): number
   var id = popup_create(lines, {
     pos: 'center',
     border: [],
     padding: [1, 2, 1, 2],
     title: ' Typing practice ',
     mapping: false,
-    filter: (pid: number, key: string): bool => SummaryKey(pid, key, OnKey),
+    filter: (pid: number, key: string): bool =>
+      !Accept() || SummaryKey(pid, key, OnKey),
     callback: (pid: number, result: any) => SummaryClosed(pid, result, OnKey),
     wrap: false,
     zindex: 250
   })
   summary_state[id] = false
   return id
+enddef
+
+# The close callback is the sole delivery point, including Esc and Ctrl-C.
+export def ShowChoice(title: string, items: list<string>,
+    OnPick: func(number)): number
+  var delivered = false
+  return popup_menu(items, {
+    title: title,
+    mapping: false,
+    callback: (_: number, result: any) => {
+      if !delivered
+        delivered = true
+        OnPick(result > 0 && result <= len(items) ? result : 0)
+      endif
+    }
+  })
 enddef

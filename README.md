@@ -41,6 +41,12 @@ colon does not open the command line.
 opens saved results in a scratch split; press `q` to close it. History is saved
 by default after at least 20 judged keystrokes, including unfinished sessions.
 
+Stopping early on a named file saves your position; the next
+`:TypingStart` on the same line range offers to resume. Use `:TypingStart!`
+to start from the beginning, or set `g:typing_resume` to `'always'` or
+`'never'` to control the offer. Positions are stored locally in
+`~/.vim/typing-practice/progress.json`, including absolute file paths.
+
 No keys are mapped by default. Example vimrc settings:
 
 ```vim
@@ -48,6 +54,8 @@ nmap <leader>t <Plug>(typing-start)
 xmap <leader>t <Plug>(typing-start)
 let g:typing_on_error = 'stay'       " Or 'advance', with Backspace to go back
 let g:typing_line_end = 'either'     " Or 'enter' or 'space'
+let g:typing_resume = 'ask'         " Or 'always' or 'never'
+let g:typing_summary_grace_ms = 500  " 0 to accept summary keys immediately
 let g:typing_blink_ms = 500          " 0 for a steady position marker
 let g:typing_history = v:true       " v:false disables saving and comparison
 let g:typing_history_min_keys = 20

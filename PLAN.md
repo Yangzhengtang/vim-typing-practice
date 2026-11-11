@@ -142,6 +142,36 @@ saved.
 as a table, totals (best WPM, average of the last ten, all-time most-missed
 keys) and a one-line WPM trend.
 
+### Resume (requested 2026-11-11)
+
+When a session on a named file stops before the end of the text, the position
+is saved. The next `:TypingStart` on that file offers to continue from there.
+
+- **Saved when** a session ends early (Esc, Ctrl-C, `:TypingStop`, leaving the
+  practice tab) and the position moved beyond where the session started.
+  Finishing the text deletes the saved position. Buffers without a file name
+  save nothing.
+- **Where**: one JSON file, `g:typing_progress_file` (default
+  `~/.vim/typing-practice/progress.json`, outside this repository), keyed by
+  the file's absolute path. Each entry holds the line range, the position, the
+  total, the line number, a fingerprint of the text and the time.
+- **Offer**: `:TypingStart` with the same line range as the saved entry shows a
+  small menu: `Resume at line 12 (37%)` or `Start from the beginning`. Esc
+  cancels and starts nothing. A different line range gets no offer.
+- **Text changed since** (fingerprint or total differs): the exact position is
+  not trusted. The menu offers `Resume at line 12 (text changed)`, which starts
+  at the first character of that line, or of the next line that has text.
+- **A resumed session** shows everything before the resume point in normal
+  colour. Those characters are not keystrokes: they do not count towards WPM,
+  accuracy or errors. Progress and the character count show the position in
+  the whole text. Backspace in `advance` mode stops at the resume point.
+  Restart (`r`) starts again from the same resume point.
+- **Summary** of a session stopped early adds a line saying the position was
+  saved and where.
+- `g:typing_resume`: `'ask'` (default), `'always'` (resume without asking) or
+  `'never'` (neither save nor offer). `:TypingStart!` starts from the
+  beginning without asking.
+
 ### Options
 
 | Option | Default | Meaning |
@@ -153,6 +183,9 @@ keys) and a one-line WPM trend.
 | `g:typing_blink_ms` | `500` | Blink half-period. `0` gives a steady cursor. |
 | `g:typing_bell` | `false` | Ring the bell on a wrong key. |
 | `g:typing_idle_seconds` | `5` | Gaps longer than this are not timed. |
+| `g:typing_resume` | `'ask'` | `'ask'`, `'always'` or `'never'`; see Resume. |
+| `g:typing_progress_file` | `~/.vim/typing-practice/progress.json` | Where resume positions are saved. |
+| `g:typing_summary_grace_ms` | `500` | Keys are ignored for this long after the summary appears. `0` disables. |
 | `g:typing_history` | `true` | Save sessions. |
 | `g:typing_history_file` | `~/.vim/typing-practice/history.jsonl` | Where sessions are saved. |
 
@@ -409,10 +442,60 @@ Options are read once at `Start`: those in section 4 plus
 `State()` keys: `phase`, `buf`, `winid`, `tabnr`, `origin_winid`, `st`, `stats`,
 `status_id`, `summary_id`, `lines`, `last_record`, `last_saved`, `last_summary`.
 
+#### Key sink across transitions (added 2026-11-11)
+
+From `Start` (or its resume prompt) until the practice tab is closed, no typed
+key may reach Normal mode. Finish → summary, summary key → restart/close and
+resume choice → practice start are deferred with zero-delay timers, and keys
+already in the typeahead run before such a timer fires, so `session.vim` keeps
+a transparent guard popup whose filter swallows keys across each transition.
+The summary also ignores keys for `g:typing_summary_grace_ms` after it
+appears, so overshoot keystrokes cannot dismiss it or trigger a restart.
+
+#### Resume additions (M6)
+
+engine.vim:
+
+```
+StartAt(st: dict<any>, index: number)             # only before the first Feed
+IndexAtLine(st: dict<any>, lnum: number): number  # first target with lnum >= given; -1 if none
+```
+
+`StartAt` clamps `index` to `[0, len(targets) - 1]`, sets the state of every
+target before it to `'skipped'`, sets `st.pos` and a new key `st.start` to it
+and leaves `standing` at 0. `Build` sets `st.start = 0`. Backspace in `advance`
+mode is ignored when `pos <= st.start`. `skipped` targets are never counted in
+`standing`. Render gives `skipped` characters no property (normal colour).
+
+stats.vim: `New` also accepts `pos` (default 0), the starting position, so
+progress is right before the first key.
+
+progress.vim (new; file I/O only):
+
+```
+DefaultFile(): string                           # g:typing_progress_file or the default path
+Fingerprint(lines: list<string>): string        # sha256 of the lines joined with "\n"
+Load(file: string): dict<any>                   # path → entry; missing or corrupt file → {}
+Get(file: string, path: string): dict<any>      # entry or {}
+Save(file: string, path: string, entry: dict<any>): bool   # read-modify-write via a temp file + rename; never throws
+Remove(file: string, path: string): bool
+```
+
+Entry keys: `line1`, `line2`, `pos`, `total`, `lnum`, `hash`, `time`.
+
+ui.vim: `ShowChoice(title: string, items: list<string>, OnPick: func(number)): number`
+— a `popup_menu`; `OnPick` gets the 1-based item, or 0 when cancelled, exactly once.
+
+session.vim: `Start(line1, line2, fresh: bool = false)`; `:TypingStart` takes a
+bang. New phase `'prompt'` while the menu is open (a second `Start` is refused;
+`Stop` cancels it). The practice tab opens only after the choice. `State()`
+adds `start` (resume index of the running session, 0 otherwise), `prompt_id`
+and `path`. History records add `start`, and `chars` becomes `pos - start`.
+
 ## 6. Milestones
 
 Each milestone ends with `./test/run.sh` passing and a check in a real
-terminal. State as of 2026-11-11: M0–M4 implemented and checked; M5 partly
+terminal. State as of 2026-11-11: M0–M4 and M6 implemented and checked; M5 partly
 done. Checks actually performed are recorded in
 [PROJECT_GUIDE.md](PROJECT_GUIDE.md).
 
@@ -424,6 +507,7 @@ done. Checks actually performed are recorded in
 | M3 ✔ | Clock with idle exclusion, live status popup, summary popup, restart. | Stats unit tests use an injected clock and check every figure in section 4 against hand-computed values. |
 | M4 ✔ | Most-missed keys, history file, `:TypingHistory`. | A session appends one valid JSON line to a temporary history file; the viewer renders a fixture file; a corrupt line is skipped without an error. |
 | M5 (partly) | Ranges and visual selection, long-line wrapping, window resize, colorscheme change, `doc/typing.txt`, README usage, install into `~/.vim/pack`. | `:help typing-practice` works; a manual pass on a real prose file and a real terminal resize. **Done:** ranges, Visual `<Plug>` mapping, wrapping options, help file, README. **Open:** real resize and colorscheme-change checks, large-file timing, installation (only on request). |
+| M6 ✔ | Resume from the saved position (section 4 "Resume"). | Tests for `progress.vim`, `engine.StartAt`, and the session flows: ask → resume, ask → start over, cancel, `always`, `never`, bang, changed text, different range, finishing clears the entry, an unnamed buffer saves nothing. A real-terminal run: stop midway, start again, pick resume, finish. |
 
 Backlog, not planned: a strict mode for source code (type indentation, Enter
 only), per-word statistics, generated drills from your most-missed keys,

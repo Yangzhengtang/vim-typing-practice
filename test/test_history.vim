@@ -59,6 +59,8 @@ def TrendLine(lines: list<string>): string
 enddef
 
 def Test_default_file()
+  var saved = g:typing_history_file
+  unlet g:typing_history_file
   var want = expand('~/.vim/typing-practice/history.jsonl')
   assert_equal(want, history.DefaultFile())
 
@@ -67,6 +69,7 @@ def Test_default_file()
   assert_equal(override, history.DefaultFile())
   remove(g:, 'typing_history_file')
   assert_equal(want, history.DefaultFile())
+  g:typing_history_file = saved
 enddef
 
 def Test_append_creates_dirs_and_one_line_per_call()
@@ -359,6 +362,7 @@ def Test_show_scratch_buffer()
 enddef
 
 def Test_show_uses_default_file()
+  var saved = g:typing_history_file
   var file = tempname()
   writefile([json_encode(Rec({file: 'default-path.txt'}))], file)
   g:typing_history_file = file
@@ -370,7 +374,7 @@ def Test_show_uses_default_file()
     assert_true(FindLine(getline(1, '$'), 'default-path.txt') >= 0)
     execute 'close'
   finally
-    remove(g:, 'typing_history_file')
+    g:typing_history_file = saved
     if winnr('$') > wins_before
       execute 'close'
     endif

@@ -477,3 +477,17 @@ Test_top_missed_ordering()
 Test_top_missed_limit()
 Test_top_missed_char_tiebreak()
 Test_missed_counts()
+
+def Test_initial_position()
+  var s = stats.New({pos: 3, total: 4})
+  var snap = stats.Snapshot(s, 10.0)
+  assert_equal(3, snap.pos)
+  assert_equal(75.0, snap.progress)
+  assert_equal(0, snap.keystrokes)
+  assert_equal(0, snap.standing)
+  assert_equal(0.0, snap.wpm)
+  assert_equal(100.0, snap.accuracy)
+  assert_false(snap.started)
+enddef
+
+Test_initial_position()

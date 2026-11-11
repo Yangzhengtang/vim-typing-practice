@@ -98,7 +98,7 @@ def BreakType(state: string): string
     return TYPE_BREAK_WRONG
   elseif state == 'fixed'
     return TYPE_BREAK_FIXED
-  elseif state == 'correct'
+  elseif state == 'correct' || state == 'skipped'
     return TYPE_BREAK_CORRECT
   endif
   return TYPE_BREAK_PENDING

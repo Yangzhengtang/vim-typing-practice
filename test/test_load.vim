@@ -1,4 +1,5 @@
 vim9script
+g:typing_resume = 'never'
 # The plugin loads in a clean Vim and registers its commands and colours.
 
 assert_equal(1, get(g:, 'loaded_typing_practice', 0))

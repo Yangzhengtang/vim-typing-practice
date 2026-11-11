@@ -546,3 +546,32 @@ Test_status_functions_noop_after_close()
 Test_summary_popup()
 Test_summary_keys()
 Test_summary_ctrl_c()
+
+def Test_choice()
+  for keys in ["\<CR>", "j\<CR>", "\<Esc>", "\<C-c>"]
+    var picks: list<number> = []
+    var id = ui.ShowChoice('Choose', ['Resume', 'Start over'],
+      (pick: number) => {
+        add(picks, pick)
+      })
+    feedkeys(keys, 'xt')
+    sleep 20m
+    assert_equal([keys == "\<CR>" ? 1 : keys == "j\<CR>" ? 2 : 0], picks)
+    assert_equal({}, popup_getpos(id))
+    popup_close(id)
+    assert_equal(1, len(picks))
+    assert_equal([], popup_list())
+  endfor
+enddef
+
+def Test_summary_saved_position()
+  var plain = ui.SummaryLines(Snap(), [], {}, false)
+  var saved = 'Position saved: line 12 (37%)'
+  var with_saved = ui.SummaryLines(Snap(), [], {}, false, saved)
+  assert_equal(-1, index(plain, saved))
+  assert_equal(1, count(with_saved, saved))
+  assert_equal(plain, filter(with_saved, (_, line) => line != saved))
+enddef
+
+Test_choice()
+Test_summary_saved_position()

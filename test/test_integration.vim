@@ -1,4 +1,5 @@
 vim9script
+g:typing_resume = 'never'
 # Real engine events consumed by stats, with independently calculated figures.
 import autoload 'typing/engine.vim'
 import autoload 'typing/stats.vim'

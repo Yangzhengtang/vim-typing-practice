@@ -5,7 +5,7 @@ vim9script
 
 const DEFAULT_IDLE_SECONDS = 5.0
 
-# opts: idle_seconds (float, default 5.0), total (number, default 0).
+# opts: idle_seconds (float, default 5.0), total and pos (numbers, default 0).
 export def New(opts: dict<any> = {}): dict<any>
   return {
     idle_seconds: get(opts, 'idle_seconds', DEFAULT_IDLE_SECONDS) + 0.0,
@@ -18,7 +18,7 @@ export def New(opts: dict<any> = {}): dict<any>
     errors: 0,
     streak: 0,
     best_streak: 0,
-    pos: 0,
+    pos: get(opts, 'pos', 0),
     total: get(opts, 'total', 0),
     standing: 0,
     finished: false,
