@@ -1,0 +1,341 @@
+*typing.txt*  Typing practice over any buffer
+
+==============================================================================
+CONTENTS                                                    *typing-contents*
+
+    Introduction               |typing-practice|
+    Requirements               |typing-requirements|
+    Quick start                |typing-quickstart|
+    Commands and mapping       |typing-commands|
+    During a session           |typing-session|
+    What to type               |typing-text|
+    Statistics                 |typing-statistics|
+    Summary                    |typing-summary|
+    History                    |typing-history|
+    Options                    |typing-options|
+    Highlights                 |typing-highlights|
+    Limitations                |typing-limitations|
+
+==============================================================================
+INTRODUCTION                                                *typing-practice*
+
+Practise typing the text of an open buffer or a line range. A scratch copy in
+a new tab shows pending text dimmed, wrong characters in red, and a blinking
+position marker. Speed, accuracy and errors are tracked and results can be
+saved. The original buffer and file are never modified.
+
+==============================================================================
+REQUIREMENTS                                            *typing-requirements*
+
+Vim 9 with +textprop, +popupwin and +timers is required. This plugin uses
+vim9script. Neovim is not supported.
+
+==============================================================================
+QUICK START                                               *typing-quickstart*
+
+After installing the plugin in Vim's package path, run :helptags ALL. Open a
+text file and run: >
+    :TypingStart
+<
+Type the displayed text. Skip indentation and blank lines. At a line-end
+marker, press Space or Enter. Esc or Ctrl-C stops and opens the summary.
+Press r in the summary to restart, or any other key to return.
+
+==============================================================================
+COMMANDS AND MAPPING                                        *typing-commands*
+
+                                                              *:TypingStart*
+:TypingStart            Practise the entire current buffer.
+:{range}TypingStart     Practise the specified lines. Examples: >
+    :'<,'>TypingStart
+    :.,$TypingStart
+<
+The first example uses a Visual selection; even a partial-line selection
+practises whole lines. Starting while a session or summary is active is
+refused. If no targets remain after skipping whitespace and optional
+non-ASCII characters, the command reports "nothing to type".
+
+                                                               *:TypingStop*
+:TypingStop             Stop typing and show the summary. If the summary is
+                        already open, close it. If idle, report that there
+                        is no typing session.
+
+                                                            *:TypingHistory*
+:TypingHistory          Open or refresh the history split.
+                        See |typing-history|.
+
+                                                      *<Plug>(typing-start)*
+No default user keys are mapped. This mapping starts the whole buffer in
+Normal mode and the selected line range in Visual mode. Example vimrc: >
+    nmap <leader>t <Plug>(typing-start)
+    xmap <leader>t <Plug>(typing-start)
+<
+==============================================================================
+DURING A SESSION                                             *typing-session*
+
+Practice uses a nonmodifiable scratch buffer in a new tab, without a swap
+file. The original window is retained. Pending regions are dimmed from the
+first target on each line; skipped indentation is not dimmed. Correct text
+returns to normal colour. A previously missed target, when corrected, is
+underlined amber. The position marker uses reverse video and blinks every
+500 ms by default. A judged key or effective Backspace resets it to "on";
+ignored keys do not. The window scrolls to follow the position.
+
+A wrong key marks the target red and displays a warning such as:
+    ✗ expected "e", typed "r"
+The warning lasts 600 ms, unless a correct key or effective Backspace clears
+it earlier. Another wrong key restarts the warning. An optional bell can ring.
+
+The two error modes are selected by |g:typing_on_error|:
+    stay       Wrong keys leave the position unchanged. Every wrong attempt
+               counts as an error. Backspace is ignored.
+    advance    Wrong keys advance. Backspace moves back one target and clears
+               its state, but retains its missed history. It can cross a
+               line-end target. At the beginning, Backspace is ignored.
+
+Correct keys advance in both modes. Arrows, function keys, mouse events and
+other non-text control keys are ignored and not counted. Tab and Enter are
+judged, even when incorrect at the current position. Esc and Ctrl-C end the
+session and show the summary. Keys bypass user mappings: colon is typing
+input, not a command prompt. :TypingStop is also a programmatic stop command.
+
+Reaching the last target ends the session immediately, including a wrong
+last key in advance mode. Leaving the practice window, buffer or tab, or
+wiping the practice buffer, aborts without a summary and saves an unfinished
+record under the normal history rules. Normal Vim shutdown does the same.
+Leaving during the summary closes it. Closing the summary returns to the
+original window if it still exists. Normal cleanup restores the terminal
+cursor before the summary; during practice the real cursor is hidden.
+
+==============================================================================
+WHAT TO TYPE                                                   *typing-text*
+
+Targets are characters plus line breaks between lines that have targets.
+Leading indentation and trailing whitespace (Vim's \s match) are ignored.
+Blank lines are skipped. There is no line-end target after the last line
+with targets. A dim virtual-text ↵ marks each required line end. By default,
+Space or Enter accepts it; |g:typing_line_end| can restrict this. A correctly
+typed line-end marker remains dim. The marker is not part of the file text.
+
+A Tab within a line is one target and accepts Tab or Space. Ordinary spaces
+inside a line must be typed. Typographic characters accept themselves or the
+following default keyboard equivalents:
+
+    Text                         Accepted equivalent
+    ’ ‘ (curly single quotes)    '
+    “ ” (curly double quotes)    "
+    – — (en dash, em dash)       -
+    … (ellipsis)                 .
+    U+00A0 (non-breaking space)  Space
+
+One equivalent key completes one target: an ellipsis takes one period, not
+three. |g:typing_equivalents| replaces this table; an empty dictionary
+disables
+it. The original character remains accepted. The Tab rule is independent.
+
+Other non-ASCII characters must be typed exactly, unless
+|g:typing_skip_non_ascii| skips them. A line with no remaining targets also
+has no line-end target. Input is judged as single printable characters;
+real input-method input and composed-character sequences are not verified.
+
+==============================================================================
+STATISTICS                                               *typing-statistics*
+
+The status popup at the bottom right shows time, rounded net WPM, accuracy
+(to one decimal place), errors and rounded progress. It refreshes after a
+non-ignored input event and once a second. "paused" means the current gap is
+longer than |g:typing_idle_seconds|. CPM and raw WPM appear in the summary.
+
+Time            Starts on the first non-ignored event. Each later correct,
+                wrong or back event adds the gap since the previous event
+                only if it is nonnegative and at most the idle threshold.
+                A longer gap is discarded entirely, not capped. A snapshot
+                includes the open gap under the same rule. Thus displayed
+                time can decrease when an open gap exceeds the threshold.
+                Completion freezes time; stopping early snapshots it at stop.
+                Display uses MM:SS with fractional seconds dropped.
+Keystrokes      Correct plus wrong judged inputs. Backspace and ignored keys
+                are excluded. Retyping a target counts again.
+Correct         Number of correct judged inputs, including repeated attempts.
+Errors          Number of wrong judged inputs, not number of wrong targets.
+Accuracy        Correct / keystrokes * 100; 100% before any judged input.
+Standing        Targets currently correct or fixed. Backspace can reduce it.
+Raw WPM         Keystrokes * 60 / 5 / elapsed seconds.
+WPM (net)       Standing * 60 / 5 / elapsed seconds.
+CPM             Net WPM * 5. All three speeds are zero when elapsed is zero.
+Streak          Consecutive correct inputs. A wrong input resets it;
+                Backspace and ignored keys neither reset nor increase it.
+Longest streak  Largest streak reached during the session.
+Progress        Position / total targets * 100; zero if total is zero.
+Characters      Position / total targets. Position counts targets passed,
+                including wrong targets in advance mode; Backspace reduces
+                it. The percentage beside it is progress.
+Most missed     Top five expected characters by misses, then miss rate, then
+                character order. Attempts include correct and wrong inputs.
+                Each entry lists wrong keys typed, by frequency descending,
+                with ties by key order.
+
+Line-end and Tab targets count as one each in these calculations. Fixing a
+mistake never removes its error or attempt count. Finishing in advance mode
+with uncorrected errors still shows 100% progress; the errors lower net WPM.
+
+==============================================================================
+SUMMARY                                                     *typing-summary*
+
+On completion, Esc, Ctrl-C or :TypingStop, a centred popup shows the result:
+time, net and raw WPM, CPM, accuracy, keystrokes, errors, longest streak,
+characters and most-missed keys. Space is displayed as ␣, Enter as ↵, and
+Tab as ⇥ in warnings and missed-key entries.
+
+If history is enabled and previous records exist, it shows the prior best
+WPM and averages of WPM and accuracy over the last ten records (or fewer if
+there are fewer). The current record is excluded from this comparison.
+"New best!" requires completion and a net WPM above the previous best.
+
+    r               Restart the same copied text with fresh statistics and
+                    the same options. The prior result has already been
+                    considered for saving.
+    Any other key   Close the summary and practice tab. This includes Esc
+                    and Ctrl-C.
+
+==============================================================================
+HISTORY                                                     *typing-history*
+
+Default file: ~/.vim/typing-practice/history.jsonl
+Each saved session appends one JSON object on one line. Parent directories
+are created as needed. Saving requires |g:typing_history| and at least
+|g:typing_history_min_keys| judged keystrokes (default 20). Both finished and
+unfinished sessions qualify. Backspace does not count toward this threshold.
+Write failures do not throw an error and are not reported in the summary.
+
+Record fields:
+    time         Unix timestamp at session start (refreshed on restart).
+    file         Original filename tail only, or "[No Name]".
+    line1,line2  Inclusive original line range, numbered from 1.
+    duration     Timed seconds, as defined in |typing-statistics|.
+    chars        Position: targets passed, including wrong ones in advance.
+    wpm          Net WPM.
+    raw_wpm      Raw WPM.
+    accuracy     Correct judged inputs as a percentage of all judged inputs.
+    errors       Wrong judged inputs.
+    best_streak  Longest correct-input streak.
+    mode         "stay" or "advance".
+    completed    Boolean: reached the end, not necessarily all correct.
+    missed       Dictionary of expected character to miss count; only misses.
+
+:TypingHistory opens a nonmodifiable scratch split named [Typing history].
+It reuses an existing history window/buffer and refreshes the contents. Press
+q to close it. It shows up to 30 records, newest first, with date, file, time,
+net/raw WPM, accuracy, errors, streak, mode and completion state. Totals show
+record count, all-time best WPM, last-ten average WPM and accuracy, and the
+five all-time most-missed keys. These include unfinished sessions. The WPM
+trend runs oldest to newest for the displayed records, scaled to their own
+minimum and maximum. Missing/unreadable files show no history; malformed JSON
+lines and non-object values are skipped. Turning saving off does not prevent
+:TypingHistory from reading existing records.
+
+==============================================================================
+OPTIONS                                                     *typing-options*
+
+Set these globals in your vimrc. Session settings are read at start and kept
+for restarts. :TypingHistory reads the current history-file setting.
+
+                                                         *g:typing_on_error*
+g:typing_on_error           String, default 'stay'.
+    'advance' moves past wrong targets; all other values select 'stay'.
+
+                                                         *g:typing_line_end*
+g:typing_line_end           String, default 'either'.
+    'enter' accepts only Enter at line ends; 'space' accepts only Space.
+    Other values accept either.
+
+                                                     *g:typing_equivalents*
+g:typing_equivalents        Dictionary of strings, default |typing-text|
+table.
+    Maps a text character to an additional accepted key. Replaces the whole
+    default table. {} disables equivalents. Non-dictionary values fall back
+    to the default table; non-string entries add no alternative.
+
+                                                   *g:typing_skip_non_ascii*
+g:typing_skip_non_ascii     Boolean, default v:false.
+    Skip characters above ASCII without an added equivalent. A mapping to
+    the character itself adds no alternative, so does not prevent skipping.
+
+                                                         *g:typing_blink_ms*
+g:typing_blink_ms           Number, default 500.
+    Blink half-period in milliseconds. Zero or negative gives a steady marker.
+
+                                                             *g:typing_bell*
+g:typing_bell               Boolean, default v:false.
+    Emit the terminal bell character on a wrong key.
+
+                                                     *g:typing_idle_seconds*
+g:typing_idle_seconds       Number or Float, default 5.
+    Gaps longer than this many seconds are excluded entirely from timing.
+    See |typing-statistics| for the open-gap behaviour.
+
+                                                          *g:typing_history*
+g:typing_history            Boolean, default v:true.
+    Save qualifying sessions and load prior records for summary comparisons.
+    False disables both; it does not disable :TypingHistory.
+
+                                                     *g:typing_history_file*
+g:typing_history_file       String.
+    Default: expanded ~/.vim/typing-practice/history.jsonl
+    Custom paths are used literally; expand a leading tilde yourself: >
+        let g:typing_history_file = expand('~/typing-history.jsonl')
+<
+                                                 *g:typing_history_min_keys*
+g:typing_history_min_keys   Number, default 20.
+    Minimum judged keystrokes needed to save. Zero permits zero-key sessions
+    to be saved when an actual practice session was started.
+
+==============================================================================
+HIGHLIGHTS                                               *typing-highlights*
+
+The public groups use :highlight default and are reapplied on ColorScheme.
+Define your own groups in your vimrc or colorscheme; the defaults do not
+replace existing definitions. Attributes not listed below are unspecified.
+
+                                                         *hl-TypingPending*
+TypingPending     Pending text and accepted line-end markers.
+                  ctermfg=242 guifg=#6c6c6c
+                                                           *hl-TypingWrong*
+TypingWrong       Wrong targets.
+                  ctermfg=15 ctermbg=160 guifg=#ffffff guibg=#d70000
+                                                           *hl-TypingFixed*
+TypingFixed       Previously missed targets now correct.
+                  cterm=underline ctermfg=178 gui=underline guifg=#d7af00
+                                                          *hl-TypingCursor*
+TypingCursor      Current position.
+                  cterm=reverse gui=reverse
+                                                          *hl-TypingStatus*
+TypingStatus      Status popup. Default link: Pmenu.
+                                                      *hl-TypingStatusWarn*
+TypingStatusWarn  Wrong-key warning popup. Default link: ErrorMsg.
+                                                     *hl-TypingCursorBlink*
+TypingCursorBlink Internal blinking group; initially linked to TypingCursor.
+                  The renderer forcibly links it to TypingCursor when on and
+                  NONE when off. Override TypingCursor, not this group.
+
+For example, hide the corrected-slip styling and change the pending colour: >
+    highlight! link TypingFixed Normal
+    highlight TypingPending ctermfg=244 guifg=#808080
+<
+To keep overrides across colorscheme changes, put them in the colorscheme
+or a ColorScheme autocommand. Correct characters use normal buffer colours.
+
+==============================================================================
+LIMITATIONS                                             *typing-limitations*
+
+- If Vim is killed during a session, the terminal cursor can remain hidden.
+  Run "tput cnorm" or "reset" in the terminal to restore it.
+- Real input-method input has not been verified. Synthetic multi-byte input
+  does not establish that an actual input method works. Combining sequences
+  may not arrive as the single character the input judge requires.
+- GUI Vim has not been verified. Terminal cursor hiding is skipped in the GUI;
+  the plugin does not change 'guicursor'.
+- Neovim is not supported.
+- Performance on very large files has not been measured.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
