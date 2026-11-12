@@ -563,3 +563,286 @@ enddef
 
 Test_start_at()
 Test_index_at_line()
+
+def Test_index_at_positions()
+  # Targets: a@1,3  b@1,4  break@1,5  c@2,1  d@2,2
+  var st = engine.Build(['  ab', 'cd'])
+  # Leading indentation is before the first target of the line.
+  assert_equal(0, engine.IndexAt(st, 1, 1))
+  assert_equal(0, engine.IndexAt(st, 1, 2))
+  # Exactly on a character.
+  assert_equal(0, engine.IndexAt(st, 1, 3))
+  assert_equal(1, engine.IndexAt(st, 1, 4))
+  # The break sits just after the last non-blank character.
+  assert_equal(2, engine.IndexAt(st, 1, 5))
+  # Past the end of the line: first target of the next line with text.
+  assert_equal(3, engine.IndexAt(st, 1, 6))
+  assert_equal(3, engine.IndexAt(st, 1, 99))
+  assert_equal(3, engine.IndexAt(st, 2, 1))
+  assert_equal(4, engine.IndexAt(st, 2, 2))
+  # After the last target.
+  assert_equal(-1, engine.IndexAt(st, 2, 3))
+  # A line number before the first line with targets.
+  assert_equal(0, engine.IndexAt(st, 0, 1))
+  # A line number after every line with targets.
+  assert_equal(-1, engine.IndexAt(st, 3, 1))
+
+  # A blank line has no targets, so the position falls to the next line.
+  var blank = engine.Build(['a', '', 'b'])
+  assert_equal(2, engine.IndexAt(blank, 2, 1))
+  assert_equal(2, engine.IndexAt(blank, 2, 5))
+  assert_equal(-1, engine.IndexAt(blank, 3, 2))
+
+  # An empty target list has nothing to return.
+  assert_equal(-1, engine.IndexAt(engine.Build([]), 1, 1))
+enddef
+
+def Test_index_at_multibyte()
+  # \u00e9 is 2 bytes at col 1, \u4e2d is 3 bytes at col 3, x is 1 byte at col 6.
+  var st = engine.Build(["\u00e9\u4e2dx"])
+  assert_equal(0, engine.IndexAt(st, 1, 1))
+  # Inside a multi-byte character still selects that character.
+  assert_equal(0, engine.IndexAt(st, 1, 2))
+  assert_equal(1, engine.IndexAt(st, 1, 3))
+  assert_equal(1, engine.IndexAt(st, 1, 5))
+  assert_equal(2, engine.IndexAt(st, 1, 6))
+  assert_equal(-1, engine.IndexAt(st, 1, 7))
+enddef
+
+def Test_jump_forward()
+  var st = engine.Build(['ab', 'cd'])
+  assert_equal(5, len(st.targets))
+  var ev = engine.Jump(st, 2)
+  assert_equal('jump', ev.kind)
+  assert_equal([], ev.changed)
+  assert_equal('', ev.expected)
+  assert_equal('', ev.typed)
+  assert_equal(2, ev.pos)
+  assert_equal(5, ev.total)
+  assert_equal(0, ev.standing)
+  assert_false(ev.done)
+  assert_equal(0, ev.lost)
+  for k in ['kind', 'changed', 'expected', 'typed', 'pos', 'total',
+      'standing', 'done', 'lost']
+    assert_true(has_key(ev, k), k)
+  endfor
+  assert_equal(['skipped', 'skipped', 'pending', 'pending', 'pending'],
+    States(st))
+  assert_equal([2, 2, 0], [st.pos, st.start, st.standing])
+  assert_false(st.done)
+
+  # Jumping to 0 from a fresh state changes no target state.
+  st = engine.Build(['ab'])
+  ev = engine.Jump(st, 0)
+  assert_equal('jump', ev.kind)
+  assert_equal(['pending', 'pending'], States(st))
+  assert_equal(0, ev.lost)
+enddef
+
+def Test_jump_after_typing()
+  var st = engine.Build(['abcd'], {on_error: 'advance'})
+  # a correct, x wrong (advances), c correct.
+  FeedAll(st, ['a', 'x', 'c'])
+  assert_equal(['correct', 'wrong', 'correct', 'pending'], States(st))
+  assert_equal([3, 2], [st.pos, st.standing])
+
+  var ev = engine.Jump(st, 3)
+  # States before the new position are kept, so wrong is kept too.
+  assert_equal(['correct', 'wrong', 'correct', 'pending'], States(st))
+  # standing counts only correct/fixed targets before the position.
+  assert_equal(2, ev.standing)
+  assert_equal(0, ev.lost)
+  assert_equal([3, 3], [st.pos, st.start])
+
+  var fed = engine.Feed(st, 'd')
+  assert_equal('correct', fed.kind)
+  assert_equal(3, fed.standing)
+  assert_true(fed.done)
+  assert_equal(['correct', 'wrong', 'correct', 'correct'], States(st))
+enddef
+
+def Test_jump_backward()
+  # fixed, correct, fixed, pending; a wrong target never reached.
+  var st = engine.Build(['abcd'])
+  FeedAll(st, ['x', 'a', 'b', 'x', 'c'])
+  assert_equal(['fixed', 'correct', 'fixed', 'pending'], States(st))
+  assert_equal([3, 3], [st.pos, st.standing])
+
+  var ev = engine.Jump(st, 0)
+  assert_equal('jump', ev.kind)
+  assert_equal(['pending', 'pending', 'pending', 'pending'], States(st))
+  assert_equal(3, ev.lost)
+  assert_equal(0, ev.standing)
+  assert_equal([0, 0], [st.pos, st.start])
+  assert_false(ev.done)
+  assert_false(st.done)
+  for t in st.targets
+    assert_false(t.missed)
+  endfor
+
+  # A partial jump recounts standing and drops only the states after it.
+  st = engine.Build(['abcd'], {on_error: 'advance'})
+  FeedAll(st, ['a', 'b', 'c', 'd'])
+  assert_true(st.done)
+  assert_equal(4, st.standing)
+  ev = engine.Jump(st, 2)
+  assert_equal(['correct', 'correct', 'pending', 'pending'], States(st))
+  assert_equal(2, ev.standing)
+  assert_equal(2, ev.lost)
+  assert_equal(2, st.standing)
+  assert_false(ev.done)
+enddef
+
+def Test_jump_same_position()
+  var st = engine.Build(['abc'], {on_error: 'advance'})
+  FeedAll(st, ['a'])
+  engine.Jump(st, 1)
+  # Target 0 was correct, so it keeps its state; only pending becomes skipped.
+  assert_equal(['correct', 'pending', 'pending'], States(st))
+  var before = States(st)
+  var ev = engine.Jump(st, 1)
+  assert_equal([], ev.changed)
+  assert_equal(0, ev.lost)
+  assert_equal(1, ev.standing)
+  assert_equal([1, 1], [st.pos, st.start])
+  assert_equal(before, States(st))
+enddef
+
+def Test_jump_invalid()
+  var st = engine.Build(['ab'])
+  FeedAll(st, ['a'])
+  var before = States(st)
+  for idx in [-1, -5, 2, 3, 99]
+    var ev = engine.Jump(st, idx)
+    assert_equal('ignored', ev.kind, string(idx))
+    assert_equal([], ev.changed, string(idx))
+    assert_equal('', ev.expected, string(idx))
+    assert_equal('', ev.typed, string(idx))
+    assert_equal(1, ev.pos, string(idx))
+    assert_equal(2, ev.total, string(idx))
+    assert_equal(1, ev.standing, string(idx))
+    assert_false(ev.done, string(idx))
+  endfor
+  assert_equal(before, States(st))
+  assert_equal([1, 0], [st.pos, st.start])
+  assert_equal(1, st.standing)
+
+  var empty_st = engine.Build([])
+  var ev = engine.Jump(empty_st, 0)
+  assert_equal('ignored', ev.kind)
+  assert_equal(0, ev.total)
+  assert_true(ev.done)
+  assert_equal(0, empty_st.pos)
+enddef
+
+def Test_jump_after_done()
+  var st = engine.Build(['abc'])
+  FeedAll(st, ['a', 'b', 'c'])
+  assert_true(st.done)
+  assert_equal(3, st.standing)
+
+  var ev = engine.Jump(st, 1)
+  assert_equal('jump', ev.kind)
+  assert_false(ev.done)
+  assert_false(st.done)
+  # Only pending targets are skipped; the typed target 0 stays correct.
+  assert_equal(['correct', 'pending', 'pending'], States(st))
+  assert_equal(1, ev.standing)
+  assert_equal(2, ev.lost)
+  assert_equal([1, 1], [st.pos, st.start])
+
+  # Typing continues from the new position.
+  assert_equal('correct', engine.Feed(st, 'b').kind)
+  var last = engine.Feed(st, 'c')
+  assert_equal('correct', last.kind)
+  assert_equal(3, last.standing)
+  assert_true(last.done)
+  assert_true(st.done)
+enddef
+
+def Test_feed_after_jump()
+  var st = engine.Build(['ab', 'cd'], {on_error: 'advance'})
+  assert_equal(2, engine.Jump(st, 2).pos)
+  var ev = engine.Feed(st, "\r")
+  assert_equal('correct', ev.kind)
+  assert_equal("\n", ev.expected)
+  assert_equal("\r", ev.typed)
+  assert_equal(3, ev.pos)
+  assert_equal('correct', engine.Feed(st, 'c').kind)
+  assert_equal('correct', engine.Feed(st, 'd').kind)
+  assert_true(st.done)
+
+  # A wrong key after a jump is judged against the new target.
+  st = engine.Build(['abcd'], {on_error: 'advance'})
+  engine.Jump(st, 3)
+  ev = engine.Feed(st, 'x')
+  assert_equal('wrong', ev.kind)
+  assert_equal('d', ev.expected)
+  assert_true(st.done)
+  assert_equal('wrong', st.targets[3].state)
+
+  # An ignored key after a jump changes nothing.
+  st = engine.Build(['abcd'])
+  engine.Jump(st, 2)
+  ev = engine.Feed(st, "\<Esc>")
+  assert_equal('ignored', ev.kind)
+  assert_equal(2, ev.pos)
+  assert_equal(['skipped', 'skipped', 'pending', 'pending'], States(st))
+enddef
+
+def Test_backspace_limit_after_jump()
+  var st = engine.Build(['abcd'], {on_error: 'advance'})
+  var ev = engine.Jump(st, 2)
+  assert_equal([2, 2], [st.pos, st.start])
+  assert_equal(0, ev.standing)
+
+  assert_equal('correct', engine.Feed(st, 'c').kind)
+  assert_equal(3, st.pos)
+  ev = engine.Feed(st, "\<BS>")
+  assert_equal('back', ev.kind)
+  assert_equal(2, st.pos)
+  assert_equal('pending', st.targets[2].state)
+  assert_equal(0, ev.standing)
+
+  # pos <= start: backspace is ignored, as before a jump.
+  for k in ["\<BS>", "\x08", "\x7f"]
+    ev = engine.Feed(st, k)
+    assert_equal('ignored', ev.kind, k)
+    assert_equal(2, st.pos, k)
+    assert_equal(['skipped', 'skipped', 'pending', 'pending'], States(st))
+  endfor
+  assert_equal('correct', engine.Feed(st, 'c').kind)
+  assert_equal(1, st.standing)
+enddef
+
+def Test_jump_near_end_done()
+  var st = engine.Build(['abc'])
+  engine.Jump(st, 2)
+  var ev = engine.Feed(st, 'c')
+  assert_equal('correct', ev.kind)
+  assert_true(ev.done)
+  assert_true(st.done)
+  assert_equal(3, st.pos)
+  assert_equal(1, ev.standing)
+
+  # Jumping back from the end reopens the text.
+  ev = engine.Jump(st, 0)
+  assert_equal('jump', ev.kind)
+  assert_false(ev.done)
+  assert_false(st.done)
+  assert_equal(0, ev.pos)
+  assert_equal(1, ev.lost)
+  assert_equal(['pending', 'pending', 'pending'], States(st))
+enddef
+
+Test_index_at_positions()
+Test_index_at_multibyte()
+Test_jump_forward()
+Test_jump_after_typing()
+Test_jump_backward()
+Test_jump_same_position()
+Test_jump_invalid()
+Test_jump_after_done()
+Test_feed_after_jump()
+Test_backspace_limit_after_jump()
+Test_jump_near_end_done()

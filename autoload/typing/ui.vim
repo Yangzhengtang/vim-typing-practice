@@ -91,6 +91,11 @@ export def WarnText(expected: string, typed: string): string
   return '✗ expected "' .. KeyName(expected) .. '", typed "' .. KeyName(typed) .. '"'
 enddef
 
+# The status line while a session is paused: the keys that act on it.
+export def PausedText(): string
+  return 'PAUSED  move · Enter type here · Esc back · q finish'
+enddef
+
 def LabelLine(label: string, value: string, width: number): string
   return label .. repeat(' ', width - strdisplaywidth(label) + 2) .. value
 enddef

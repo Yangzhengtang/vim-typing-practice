@@ -62,7 +62,7 @@ def Test_save_prompt_resume()
   var path = Fresh()
   var origin = bufnr()
   TypingStart
-  Keys("abc d\<Esc>")
+  Keys("abc d\<Esc>q")
   assert_equal('summary', session.State().phase)
   var saved = progress.Get(g:typing_progress_file, path)
   assert_equal(5, saved.pos)
@@ -98,7 +98,7 @@ def Test_save_prompt_resume()
   assert_equal([], filter(prop_list(1, {bufnr: s.buf}),
     (_, p) => p.type == 'TypingPending' || p.type == 'TypingCursor'))
   assert_equal([], filter(prop_list(2, {bufnr: s.buf}), (_, p) => p.col == 1))
-  Keys("e\<Esc>")
+  Keys("e\<Esc>q")
   assert_equal(1, session.State().stats.keystrokes)
   assert_equal(1, session.State().st.standing)
   assert_equal(5, session.State().last_record.start)
@@ -159,7 +159,7 @@ def Test_modes_bang_and_range()
   g:typing_resume = 'never'
   TypingStart
   assert_equal(0, session.State().start)
-  Keys("ab\<Esc>")
+  Keys("ab\<Esc>q")
   assert_notmatch('Position saved:', join(session.State().last_summary))
   Close()
   assert_equal(5, progress.Get(g:typing_progress_file, path).pos)
@@ -224,7 +224,7 @@ enddef
 def Test_unnamed_and_abort()
   Fresh(['abcdef'], false)
   TypingStart
-  Keys("ab\<Esc>")
+  Keys("ab\<Esc>q")
   assert_equal({}, progress.Load(g:typing_progress_file))
   assert_false(filereadable(g:typing_progress_file))
   Close()
@@ -248,7 +248,7 @@ def Test_advance_limit_and_no_movement()
   g:typing_resume = 'always'
   g:typing_on_error = 'advance'
   TypingStart
-  Keys("\<BS>e\<BS>\<BS>\<Esc>")
+  Keys("\<BS>e\<BS>\<BS>\<Esc>q")
   assert_equal(5, session.State().st.pos)
   assert_equal(0, session.State().st.standing)
   assert_equal(5, progress.Get(g:typing_progress_file, path).pos)
@@ -268,7 +268,7 @@ Test_advance_limit_and_no_movement()
 def Test_range_line_numbers_and_save_failure()
   var path = Fresh(['ignored', 'ab', 'cde'])
   session.Start(2, 3)
-  Keys("ab c\<Esc>")
+  Keys("ab c\<Esc>q")
   assert_equal(3, progress.Get(g:typing_progress_file, path).lnum)
   assert_equal(2, progress.Get(g:typing_progress_file, path).line1)
   Close()
@@ -289,7 +289,7 @@ def Test_range_line_numbers_and_save_failure()
   g:typing_progress_file = blocker .. '/progress.json'
   try
     TypingStart
-    Keys("ab\<Esc>")
+    Keys("ab\<Esc>q")
     assert_notmatch('Position saved:', join(session.State().last_summary))
     Close()
     assert_equal(['block'], readfile(blocker))

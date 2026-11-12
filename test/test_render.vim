@@ -815,6 +815,193 @@ def Test_long_session_invariants()
   endfor
 enddef
 
+# 13. Original syntax colours -----------------------------------------------
+# The practice copy keeps the original buffer's syntax highlighting (PLAN.md
+# section 4).  Untyped text is the plain TypingPending grey; typed text shows
+# its syntax colour.  A tiny buffer-local syntax keeps these checks independent
+# of any runtime syntax file.  On 'alpha beta alpha beta' columns 1-5 and
+# 12-16 are the keyword, 7 and 18 are plain letters.
+
+def NewSyntaxBuf(lines: list<string>): number
+  syntax enable
+  var buf = NewBuf(lines)
+  syntax clear
+  syntax keyword TypTestKw alpha
+  highlight TypTestKw ctermfg=196 guifg=#ff0000 cterm=bold gui=bold
+  return buf
+enddef
+
+def ClearTestSyntax()
+  syntax clear
+  highlight clear TypTestKw
+  highlight clear TypTestTrail
+  syntax off
+enddef
+
+# Sample the blink until both phases were seen; Check(on) runs after a redraw
+# in each sample, with on = the phase actually shown.
+def WatchBlink(Check: func(bool))
+  render.StartBlink(20)
+  var seen_on = false
+  var seen_off = false
+  for _ in range(1, 100)
+    sleep 5m
+    redraw
+    var on = BlinkOn()
+    Check(on)
+    if on
+      seen_on = true
+    else
+      seen_off = true
+    endif
+    if seen_on && seen_off
+      break
+    endif
+  endfor
+  render.StopBlink()
+  assert_true(seen_on, 'saw the cursor "on" phase')
+  assert_true(seen_off, 'saw the cursor "off" phase')
+enddef
+
+def Test_screen_pending_over_syntax()
+  var buf = NewSyntaxBuf(['alpha beta alpha beta'])
+  try
+    var st = engine.Build(getline(1, '$'))
+    render.Setup(buf, st)
+    winrestview({lnum: 1, col: 0, topline: 1})
+    redraw
+
+    assert_false(prop_type_get(TYPE_PENDING, {bufnr: buf}).combine,
+      'the pending property type does not combine with syntax')
+
+    # Before typing: the keyword's syntax colour (red, bold) is invisible; the
+    # grey is the same as on a character that has no syntax group.
+    var kw_untyped = ScreenCell(1, 12)
+    var plain_untyped = ScreenCell(1, 7)
+    assert_notequal(-99, kw_untyped.attr, 'line is on screen')
+    assert_equal('a', kw_untyped.text, 'the cell is the keyword character')
+    assert_equal(plain_untyped.attr, kw_untyped.attr,
+      'grey replaces the syntax colour, including its bold')
+
+    # Type the first word and the space after it (a typed character with no
+    # syntax group); the cursor then sits on column 7.
+    TypeAll(buf, st, ['a', 'l', 'p', 'h', 'a', ' '])
+    redraw
+    var kw_typed = ScreenCell(1, 1)
+    var plain_typed = ScreenCell(1, 6)
+    var kw_later = ScreenCell(1, 12)
+    assert_equal('a', kw_typed.text, 'the typed cell is the keyword character')
+    assert_equal(' ', plain_typed.text)
+    assert_notequal(plain_typed.attr, kw_typed.attr,
+      'the typed keyword shows its syntax colour')
+    assert_notequal(kw_untyped.attr, kw_typed.attr,
+      'the typed keyword differs from an untyped one')
+    assert_equal(kw_untyped.attr, kw_later.attr,
+      'the later keyword is still pending')
+    assert_equal(plain_untyped.attr, ScreenCell(1, 18).attr,
+      'a later plain letter is still pending')
+  finally
+    ClearTestSyntax()
+  endtry
+enddef
+
+def Test_screen_cursor_blink_over_syntax()
+  var buf = NewSyntaxBuf(['alpha beta alpha beta'])
+  try
+    var st = engine.Build(getline(1, '$'))
+    render.Setup(buf, st)
+    # Typing up to the second keyword leaves the cursor on its first
+    # character (column 12), an untyped keyword character.
+    TypeAll(buf, st, ['a', 'l', 'p', 'h', 'a', ' ', 'b', 'e', 't', 'a', ' '])
+    assert_equal(11, st.pos, 'cursor is on the second keyword')
+    winrestview({lnum: 1, col: 0, topline: 1})
+    redraw
+    var cur = ScreenCell(1, 12)
+    var next = ScreenCell(1, 13)
+    assert_notequal(-99, cur.attr, 'line is on screen')
+    assert_equal('a', cur.text, 'cursor cell is the keyword character')
+    assert_equal('l', next.text, 'neighbour is the next untyped character')
+
+    WatchBlink((on) => {
+      var a = screenattr(cur.row, cur.col)
+      var b = screenattr(next.row, next.col)
+      if on
+        assert_notequal(b, a, 'the "on" cursor differs from an untyped cell')
+      else
+        assert_equal(b, a, 'the "off" cursor looks like an untyped cell')
+      endif
+    })
+  finally
+    render.StopBlink()
+    ClearTestSyntax()
+  endtry
+enddef
+
+def Test_screen_wrong_and_fixed_over_syntax()
+  var buf = NewSyntaxBuf(['alpha beta alpha beta'])
+  try
+    var st = engine.Build(getline(1, '$'))
+    render.Setup(buf, st)
+    var ev = Type(buf, st, 'x')
+    assert_equal('wrong', ev.kind)
+    assert_equal(0, st.pos, 'stay mode: the cursor stays on the wrong target')
+    winrestview({lnum: 1, col: 0, topline: 1})
+    redraw
+    var wrong = ScreenCell(1, 1)
+    var kw_untyped = ScreenCell(1, 12)
+    assert_notequal(-99, wrong.attr, 'line is on screen')
+    assert_equal('a', wrong.text)
+
+    Type(buf, st, 'a')
+    TypeAll(buf, st, ['l', 'p', 'h'])
+    redraw
+    var fixed = ScreenCell(1, 1)
+    var kw_typed = ScreenCell(1, 2)
+    assert_equal('a', fixed.text)
+    assert_equal('l', kw_typed.text)
+    assert_notequal(kw_typed.attr, fixed.attr,
+      'the corrected keyword character differs from a typed one')
+
+    # Back to a wrong first character: in stay mode it is always under the
+    # cursor, so it must read as wrong in both blink phases.
+    var st2 = engine.Build(getline(1, '$'))
+    render.Setup(buf, st2)
+    Type(buf, st2, 'x')
+    WatchBlink((on) => {
+      var a = screenattr(wrong.row, wrong.col)
+      var phase = on ? '"on"' : '"off"'
+      assert_notequal(kw_untyped.attr, a,
+        $'wrong ({phase}) differs from an untyped keyword character')
+      assert_notequal(kw_typed.attr, a,
+        $'wrong ({phase}) differs from a typed keyword character')
+    })
+  finally
+    render.StopBlink()
+    ClearTestSyntax()
+  endtry
+enddef
+
+def Test_screen_break_marker_over_syntax()
+  var buf = NewSyntaxBuf(['alpha  ', 'beta'])
+  # Make the cells around the marker bold and coloured: only the marker's own
+  # highlight must show.
+  syntax match TypTestTrail /\s\+$/
+  highlight TypTestTrail ctermfg=196 guifg=#ff0000 cterm=bold gui=bold
+  try
+    var st = engine.Build(getline(1, '$'))
+    render.Setup(buf, st)
+    winrestview({lnum: 1, col: 0, topline: 1})
+    redraw
+    var marker = ScreenCell(1, 6)
+    var pending = ScreenCell(2, 1)
+    assert_equal("\u21b5", marker.text, 'the marker is on screen')
+    assert_equal(pending.attr, marker.attr,
+      'the pending marker stays grey over a bold, coloured syntax region')
+  finally
+    ClearTestSyntax()
+  endtry
+enddef
+
 # Run -----------------------------------------------------------------------
 
 Test_initial_pending_props()
@@ -863,3 +1050,7 @@ def Test_resume_setup()
 enddef
 
 Test_resume_setup()
+Test_screen_pending_over_syntax()
+Test_screen_cursor_blink_over_syntax()
+Test_screen_wrong_and_fixed_over_syntax()
+Test_screen_break_marker_over_syntax()

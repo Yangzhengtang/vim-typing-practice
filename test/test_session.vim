@@ -209,7 +209,7 @@ def Test_wrong_key()
   assert_equal([ui.WarnText('a', 'x')],
     getbufline(winbufnr(s.status_id), 1, '$'))
 
-  feedkeys("\<Esc>", 'xt')
+  feedkeys("\<Esc>q", 'xt')
   sleep 20m
   assert_equal('summary', session.State().phase)
   feedkeys('x', 'xt')
@@ -231,7 +231,7 @@ def Test_wrong_key_bell()
   assert_equal(1, s.stats.errors)
   assert_equal([ui.WarnText('a', 'x')],
     getbufline(winbufnr(s.status_id), 1, '$'))
-  feedkeys("\<Esc>", 'xt')
+  feedkeys("\<Esc>q", 'xt')
   sleep 20m
   feedkeys('x', 'xt')
   sleep 20m
@@ -247,7 +247,12 @@ def Test_esc_midway()
   assert_equal('', &t_ve)
   feedkeys('hel', 'xt')
   sleep 20m
+  # Esc pauses; q from the paused phase ends the session early.
   feedkeys("\<Esc>", 'xt')
+  sleep 20m
+  assert_equal('paused', session.State().phase)
+  assert_equal('ESCVE', &t_ve)
+  feedkeys('q', 'xt')
   sleep 20m
 
   var s = session.State()
@@ -307,7 +312,7 @@ def Test_status_tick()
   assert_true(before != after, string(before) .. ' / ' .. string(after))
   assert_match('^00:0[12]', after[0])
   assert_match('33%$', after[0])
-  feedkeys("\<Esc>", 'xt')
+  feedkeys("\<Esc>q", 'xt')
   sleep 20m
   feedkeys('x', 'xt')
   sleep 20m
@@ -838,6 +843,7 @@ Test_settings_frozen_on_restart()
 ClearHistory()
 
 # A single drained typeahead batch must never become Normal-mode commands.
+# Esc pauses and q ends the session; the rest falls into the transition guard.
 def Test_typeahead_escape()
   var t0 = Fresh()
   g:typing_summary_grace_ms = 10000

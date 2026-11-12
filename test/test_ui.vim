@@ -575,3 +575,15 @@ enddef
 
 Test_choice()
 Test_summary_saved_position()
+
+# The paused hint names the four session keys and fits a narrow window.
+def Test_paused_text()
+  var text = ui.PausedText()
+  assert_equal('PAUSED  move · Enter type here · Esc back · q finish', text)
+  assert_true(strdisplaywidth(text) <= 66, string(strdisplaywidth(text)))
+  for word in ['PAUSED', 'Enter', 'Esc', 'q finish']
+    assert_match('\V' .. word, text)
+  endfor
+enddef
+
+Test_paused_text()

@@ -14,8 +14,8 @@ import autoload 'typing/ui.vim'
 const AUGROUP = 'TypingPracticeSession'
 const TICK_MS = 1000
 
-# Public phases are 'idle', 'prompt', 'typing' and 'summary'. Work is guarded by
-# `cleaning` instead, so State() never shows an internal phase.
+# Public phases are 'idle', 'prompt', 'typing', 'paused' and 'summary'. Work is
+# guarded by `cleaning` instead, so State() never shows an internal phase.
 var start = 0
 var prompt_id = -1
 var path = ''
@@ -23,6 +23,7 @@ var resume_mode = 'ask'
 var progress_file = ''
 var fingerprint = ''
 var origin_tabstop = 8
+var origin_syntax = ''
 var phase = 'idle'
 var cleaning = false
 
@@ -61,6 +62,16 @@ var last_saved = false
 var last_summary: list<string> = []
 var deferred_timer = -1
 var started_at = 0
+
+# Key-code timeout saved at Start ({} when untouched) and restored at cleanup.
+var saved_timeout: dict<any> = {}
+
+# While paused, Normal-mode keys pass through to Vim. This tracks a command
+# that is still waiting for more keys: 'count' after count digits, 'prefix'
+# after a key whose next key is an argument (f, t, g, z, ", m, ' ...).
+var pause_pending = ''
+const PREFIX_KEYS = ['f', 'F', 't', 'T', "'", '`', '"', 'm', 'g', 'z', '[', ']',
+  '@', 'r', 'Z', "\<C-w>", "\x1c"]
 
 # The clock is injectable so tests can hand-compute durations and WPM.
 def DefaultClock(): float
@@ -113,6 +124,32 @@ def ReadSettings()
   progress_file = progress.DefaultFile()
 enddef
 
+# Make Esc register at once: a short key-code timeout for the whole session.
+# A user value already between 0 and the configured one is kept.
+def ApplyEscTimeout()
+  RestoreEscTimeout()
+  var ms = get(g:, 'typing_esc_timeout_ms', 50) + 0
+  if ms <= 0
+    return
+  endif
+  saved_timeout = {ttimeout: &ttimeout, ttimeoutlen: &ttimeoutlen}
+  &ttimeout = true
+  if &ttimeoutlen < 0 || &ttimeoutlen > ms
+    &ttimeoutlen = ms
+  endif
+enddef
+
+# Idempotent: only the first call after ApplyEscTimeout changes anything.
+def RestoreEscTimeout()
+  if empty(saved_timeout)
+    return
+  endif
+  var saved = saved_timeout
+  saved_timeout = {}
+  &ttimeout = saved.ttimeout
+  &ttimeoutlen = saved.ttimeoutlen
+enddef
+
 export def Start(line1: number, line2: number, fresh: bool = false)
   if phase != 'idle' || cleaning
     Echo('WarningMsg', 'vim-typing-practice: a typing session is already active')
@@ -124,6 +161,9 @@ export def Start(line1: number, line2: number, fresh: bool = false)
   path = name == '' ? '' : fnamemodify(name, ':p')
   start = 0
   origin_tail = name == '' ? '[No Name]' : fnamemodify(name, ':t')
+  # Only 'syntax' is copied, never 'filetype', so no ftplugin or FileType
+  # autocommand runs for the practice copy.
+  origin_syntax = &l:syntax
   lines = getline(line1, line2)
   first_line = line1
   last_line = line2
@@ -136,6 +176,7 @@ export def Start(line1: number, line2: number, fresh: bool = false)
     origin_winid = 0
     opts = {}
     path = ''
+    origin_syntax = ''
     Echo('WarningMsg', 'nothing to type')
     return
   endif
@@ -150,6 +191,7 @@ export def Start(line1: number, line2: number, fresh: bool = false)
   fingerprint = progress.Fingerprint(lines)
   var candidate = fresh || resume_mode == 'never' || path == ''
     ? {} : progress.Get(progress_file, path)
+  ApplyEscTimeout()
   OpenGuard()
   var resume = ResumeIndex(candidate)
   if resume >= 0
@@ -173,11 +215,12 @@ enddef
 
 # A global, fully masked popup stays below the interactive popups across tab
 # changes. Hidden popups do not filter keys; a masked visible popup does.
+# While paused it lets keys through so they reach Normal mode.
 def OpenGuard()
   guard_id = popup_create('', {
     line: 1, col: 1, minwidth: 1, minheight: 1,
     mask: [[1, 1, 1, 1]], tabpage: -1, zindex: 1, mapping: false,
-    filter: (_: number, key: string): bool => true,
+    filter: (_: number, key: string): bool => phase != 'paused',
     callback: (id: number, result: any) => {
       if id == guard_id && result == -1
         # Ctrl-C bypasses filters. Re-arm synchronously before more input;
@@ -277,10 +320,15 @@ def OpenPractice(tabstop: number): bool
   setlocal wrap linebreak nonumber norelativenumber nolist
   setlocal nocursorline nocursorcolumn nospell signcolumn=no foldcolumn=0
   setlocal colorcolumn= nofoldenable
+  setlocal conceallevel=0 concealcursor=
   &l:scrolloff = 5
   setline(1, lines)
   setlocal nomodifiable
   execute 'silent! file ' .. fnameescape('[Typing] ' .. origin_tail)
+  # The origin's syntax highlighting, in the active colorscheme.
+  if origin_syntax != ''
+    &l:syntax = origin_syntax
+  endif
   return true
 enddef
 
@@ -296,17 +344,34 @@ def StopTick()
   endif
 enddef
 
+# The tick also notices a practice window that no longer shows the practice
+# buffer (possible while paused, when any command can run).
 def OnTick()
+  if (phase == 'typing' || phase == 'paused') && !cleaning && !PracticeValid()
+    Abort()
+    return
+  endif
   if phase == 'typing'
     RefreshStatus()
   endif
 enddef
 
+def PracticeValid(): bool
+  return buf > 0 && bufexists(buf) && winid > 0 && WinExists(winid)
+    && winbufnr(winid) == buf
+enddef
+
+# While paused the status shows the key hint instead, so it is left alone.
 def RefreshStatus()
   if phase != 'typing' || status_id <= 0
     return
   endif
-  ui.SetStatus(status_id, ui.StatusText(stats.Snapshot(snums, Now())))
+  var snap = stats.Snapshot(snums, Now())
+  # After a pause the clock waits for the next key; that is not an idle pause.
+  if get(snums, 'resting', false)
+    snap.paused = false
+  endif
+  ui.SetStatus(status_id, ui.StatusText(snap))
 enddef
 
 # Put the real cursor on the current target so the window scrolls with the
@@ -326,9 +391,13 @@ def WinExists(id: number): bool
   return get(win_id2tabwin(id), 0, 0) > 0
 enddef
 
-# The status popup filter: every key is consumed.
+# The status popup filter: every key is consumed, except while paused, when
+# keys other than the four session keys pass through to Vim.
 def Filter(id: number, key: string): bool
   try
+    if phase == 'paused'
+      return PausedKey(key)
+    endif
     HandleKey(key)
   catch
     # An error in a filter is treated as "not handled" and after three errors
@@ -344,7 +413,7 @@ def HandleKey(key: string)
     return
   endif
   if key == "\<Esc>"
-    Finish(false)
+    Pause()
     return
   endif
 
@@ -373,9 +442,113 @@ def HandleKey(key: string)
   endif
 enddef
 
-# Ctrl-C closes the popup without calling the filter and reports -1.
+# Esc while typing: stop the clock and the blink, show the real cursor on the
+# current target and the key hint. Motions then move the cursor natively.
+def Pause()
+  stats.Pause(snums, Now())
+  render.StopBlink()
+  render.RestoreTerminalCursor()
+  MoveCursor()
+  pause_pending = ''
+  phase = 'paused'
+  ui.ClearWarn(status_id)
+  ui.SetStatus(status_id, ui.PausedText())
+enddef
+
+# Back to typing at st.pos (after Esc, or after a jump).
+def Unpause()
+  pause_pending = ''
+  phase = 'typing'
+  render.HideTerminalCursor()
+  render.StartBlink(blink_ms)
+  MoveCursor()
+  RefreshStatus()
+enddef
+
+# Returns true when the key was handled here, false to let Vim execute it.
+def PausedKey(key: string): bool
+  if !PracticeValid()
+    Abort()
+    return true
+  endif
+  # Command-line, Visual, Insert and Operator-pending input belongs to Vim.
+  if mode(1) !=# 'n'
+    pause_pending = ''
+    return false
+  endif
+  # The Esc fed to cancel a count goes to Vim.
+  if pause_pending == 'cancel' && key == "\<Esc>"
+    pause_pending = ''
+    return false
+  endif
+  # The argument of f, t, g, " ... is never a session key.
+  if pause_pending == 'prefix'
+    pause_pending = ''
+    return false
+  endif
+  if key =~# '^[1-9]$' || (key == '0' && pause_pending == 'count')
+    pause_pending = 'count'
+    return false
+  endif
+  if index(PREFIX_KEYS, key) >= 0
+    pause_pending = 'prefix'
+    return false
+  endif
+
+  var enter = key == "\r" || key == "\n" || key == "\<kEnter>"
+  if !enter && key != 'i' && key != 'q' && key != "\<Esc>"
+    pause_pending = ''
+    return false
+  endif
+  if pause_pending == 'count'
+    if key == "\<Esc>"
+      # Esc after a count cancels the count, as in Vim.
+      pause_pending = ''
+      return false
+    endif
+    # Cancel the pending count in Vim first, so it cannot outlive the
+    # session, then handle the key itself.
+    pause_pending = 'cancel'
+    feedkeys("\<Esc>" .. key, 'int')
+    return true
+  endif
+
+  if key == "\<Esc>"
+    Unpause()
+  elseif key == 'q'
+    Finish(false)
+  else
+    JumpToCursor()
+  endif
+  return true
+enddef
+
+# Enter or i while paused: type from the first target at or after the cursor.
+def JumpToCursor()
+  var cur = getcurpos(winid)
+  var index = engine.IndexAt(st, cur[1], cur[2])
+  if index < 0
+    Echo('WarningMsg', 'vim-typing-practice: nothing to type from here')
+    return
+  endif
+  var ev = engine.Jump(st, index)
+  if ev.kind != 'jump'
+    return
+  endif
+  var now = Now()
+  stats.Record(snums, ev, now)
+  # A jump is not a keystroke: the first key after it adds no time, as at the
+  # start of a session.
+  stats.Pause(snums, now)
+  render.Setup(buf, st)
+  ui.ClearWarn(status_id)
+  Unpause()
+enddef
+
+# Ctrl-C closes the popup without calling the filter and reports -1. Any other
+# close of the live status popup from outside also ends the session.
 def OnStatusClosed(id: number, result: any)
-  if id == status_id && result == -1 && phase == 'typing'
+  if id == status_id && (phase == 'typing' || phase == 'paused')
     Finish(false)
   endif
 enddef
@@ -388,7 +561,7 @@ def BuildRecord(snap: dict<any>, completed: bool): dict<any>
     line2: last_line,
     duration: snap.elapsed,
     start: start,
-    chars: snap.pos - start,
+    chars: snap.passed,
     wpm: snap.wpm,
     raw_wpm: snap.raw_wpm,
     accuracy: snap.accuracy,
@@ -401,7 +574,7 @@ def BuildRecord(snap: dict<any>, completed: bool): dict<any>
 enddef
 
 def Finish(completed: bool)
-  if phase != 'typing'
+  if phase != 'typing' && phase != 'paused'
     return
   endif
   # Change the phase first: closing popups and the tab can fire callbacks and
@@ -438,7 +611,9 @@ def SavePosition(completed: bool): string
   endif
   if completed
     progress.Remove(progress_file, path)
-  elseif st.pos > start && st.pos < len(st.targets)
+  elseif st.pos != start && st.pos > 0 && st.pos < len(st.targets)
+    # Wherever typing or jumps left the position, forward or back, as long
+    # as it is not where this session started.
     var lnum = st.targets[st.pos].lnum + first_line - 1
     var entry = {line1: first_line, line2: last_line, pos: st.pos,
       total: len(st.targets), lnum: lnum, hash: fingerprint, time: localtime()}
@@ -517,6 +692,7 @@ def Restart()
   summary_id = -1
   started_at = localtime()
   st = engine.Build(lines, opts)
+  # The session's first start position, whatever jumps happened since.
   engine.StartAt(st, start)
   snums = stats.New({idle_seconds: idle_seconds, total: len(st.targets), pos: start})
   last_record = {}
@@ -560,6 +736,7 @@ def OnVimLeave()
   CloseGuard()
   cleaning = false
   render.RestoreTerminalCursor()
+  RestoreEscTimeout()
 enddef
 
 def OnResized()
@@ -606,7 +783,7 @@ def Abort()
     return
   endif
   try
-    if phase == 'typing'
+    if phase == 'typing' || phase == 'paused'
       SaveIncomplete()
     endif
   finally
@@ -647,6 +824,8 @@ def Cleanup()
       render.Teardown(buf)
     catch
       render.RestoreTerminalCursor()
+    finally
+      RestoreEscTimeout()
     endtry
     CloseStatusPopup()
     var sid = summary_id
@@ -675,6 +854,8 @@ def Cleanup()
     mode = 'stay'
     start = 0
     path = ''
+    origin_syntax = ''
+    pause_pending = ''
   endtry
 
   # Leave/wipe autocommands and popup filters must unwind before tab changes.
@@ -710,7 +891,7 @@ def Close()
 enddef
 
 export def Stop()
-  if phase == 'typing'
+  if phase == 'typing' || phase == 'paused'
     Finish(false)
   elseif phase == 'summary' || phase == 'prompt'
     Close()

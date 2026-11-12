@@ -243,3 +243,65 @@ export def Feed(st: dict<any>, key: string): dict<any>
   st.done = st.pos >= total
   return Event(st, kind, changed, t.char, k)
 enddef
+
+# Byte column -> index of the first target that contains or follows it. A
+# break has len 0 and occupies the column just after the last non-blank
+# character, so it counts as one byte wide here.
+export def IndexAt(st: dict<any>, lnum: number, col: number): number
+  var targets: list<dict<any>> = st.targets
+  var i = 0
+  for t in targets
+    if t.lnum > lnum
+      return i
+    endif
+    if t.lnum == lnum
+      var tlen: number = t.len
+      var width = tlen > 0 ? tlen : 1
+      if t.col + width > col
+        return i
+      endif
+    endif
+    i += 1
+  endfor
+  return -1
+enddef
+
+# Move the current position to a target index at any time, including after the
+# text is finished. Targets before it that were never typed become skipped;
+# everything from it on is reset to pending. Only correct/fixed states that are
+# thrown away are counted in the event's lost. The caller re-renders everything,
+# so the event's changed list is empty.
+export def Jump(st: dict<any>, index: number): dict<any>
+  var total = len(st.targets)
+  if index < 0 || index >= total
+    return Event(st, 'ignored', [], '', '')
+  endif
+  var targets: list<dict<any>> = st.targets
+  var standing = 0
+  var lost = 0
+  var i = 0
+  for t in targets
+    if i < index
+      if t.state == 'pending'
+        t.state = 'skipped'
+      endif
+      if IsGood(t.state)
+        standing += 1
+      endif
+    else
+      if IsGood(t.state)
+        lost += 1
+      endif
+      t.state = 'pending'
+      t.missed = false
+    endif
+    i += 1
+  endfor
+  st.pos = index
+  st.start = index
+  st.standing = standing
+  st.done = false
+  var ev = Event(st, 'jump', [], '', '')
+  ev.lost = lost
+  return ev
+enddef

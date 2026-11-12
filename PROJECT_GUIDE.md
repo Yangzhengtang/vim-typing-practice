@@ -15,7 +15,10 @@ The full design, the decisions agreed with the owner, and the milestones are in
 - vim9script only; Vim 9 with `+textprop`, `+popupwin`, `+timers`.
 - Practice happens in a `nomodifiable` scratch copy in a new tab.
 - A popup window with a `filter` callback is the single key sink; no mappings
-  during a session.
+  during a session. Esc pauses: keys then pass through to Vim so the cursor
+  can be moved, and Enter types from the cursor.
+- The practice copy takes the origin's `'syntax'`; untyped text is a
+  non-combining grey property, so typed text shows the colorscheme's colours.
 - Colours are text properties; the blink is a timer toggling a highlight group.
 - Pure `engine` module decides whether a key is right; `render` and `stats`
   consume its events.
@@ -64,13 +67,13 @@ Tests that write history must point `g:typing_history_file` at a temporary file.
 
 ## Status
 
-**2026-11-11 — milestones M0–M4 and M6 (resume) implemented, M5 partly.**
-Two commits on this date: the first version (M0–M4), then resume, the
-key-sink fix and the summary grace period.
+**2026-11-11 — milestones M0–M4, M6 (resume) and M7 (original colours,
+pause to move) implemented, M5 partly.** Commits on this date: the first
+version (M0–M4); resume, the key-sink fix and the summary grace period; M7.
 
 Checks actually performed on this date, Vim 9.1.1752 on macOS inside tmux:
 
-- `./test/run.sh`: 10 files passed, also with `TERM=dumb` and with `TERM`
+- `./test/run.sh`: 11 files passed, also with `TERM=dumb` and with `TERM`
   unset. The runner was shown to report a failing assertion (exit 1) and to
   kill and report a hanging test (`timed out`).
 - Real-terminal runs in an isolated tmux server, keys sent with `tmux
@@ -91,13 +94,25 @@ Checks actually performed on this date, Vim 9.1.1752 on macOS inside tmux:
     by overshoot keys `rq:i`. In both the summary was showing afterwards, with
     no macro recording, no command-line window and no restart. Before the fix
     the first sequence started a macro recording and left the session unusable.
+  - Colours and pause (M7), on a four-line Python sample with `syntax on`,
+    once each under the built-in `unokai` and `desert` schemes: the practice
+    copy is uniformly grey before typing; typed text takes the same colour
+    codes as the original buffer (keyword, function name, string, comment);
+    untyped text stays grey. Esc shows the pause hint with the terminal cursor
+    visible within half a second; `G` + Enter types from the last line with
+    the skipped text in scheme colours and progress 70%; Esc, `gg`, `i` makes
+    everything grey again; Esc, Esc returns to typing with the cursor hidden;
+    Esc, `q` shows the summary. End state read from inside Vim: one tab, no
+    popups, no timers, no macro recording, `t_ve`, `ttimeout` and
+    `ttimeoutlen` restored, buffer unmodified, file checksum unchanged.
 - `:helptags doc` exits 0.
 
-Known behaviour: in a terminal Vim recognises Esc only after its key-code
-timeout (up to one second with default settings); Ctrl-C is immediate. The help
-file explains `ttimeoutlen`.
+Known behaviour: a session sets `ttimeout`/`ttimeoutlen` (default 50 ms) so
+Esc registers at once, and restores them afterwards. A wrong character under
+the cursor shows without the syntax bold/italic.
 
-Not checked: input through a real input method; GUI Vim; a real terminal
+Not checked: third-party colorschemes such as molokai (none is installed
+here); `termguicolors`; input through a real input method; GUI Vim; a real terminal
 resize; a colorscheme change during a session; large files; the summary popup
 in a terminal shorter than about 22 rows. In the tmux runs keys arrive in
 bursts, so the WPM figures there are meaningless.

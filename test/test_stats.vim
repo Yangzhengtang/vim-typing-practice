@@ -33,6 +33,14 @@ def Wrong(expected: string, typed: string, pos: number, total: number,
   return Ev('wrong', expected, typed, pos, total, standing, done)
 enddef
 
+# Jump events (produced by engine.Jump, PLAN.md section 5.1) carry `lost`.
+def Jump(lost: number, pos: number, total: number,
+    standing: number): dict<any>
+  var ev = Ev('jump', '', '', pos, total, standing)
+  ev.lost = lost
+  return ev
+enddef
+
 # Floats must stay floats, so compare with a tolerance but reject other types.
 def Near(got: any, want: float, label: string)
   if type(got) != v:t_float
@@ -62,10 +70,12 @@ def Test_no_events_yet()
   assert_false(snap.started, 'started before any event')
   assert_false(snap.paused, 'paused before any event')
   assert_false(snap.finished, 'finished before any event')
-  assert_equal(['accuracy', 'best_streak', 'correct', 'cpm', 'elapsed',
-    'errors', 'finished', 'keystrokes', 'paused', 'pos', 'progress',
-    'raw_wpm', 'standing', 'started', 'streak', 'total', 'wpm'],
+  assert_equal(['accuracy', 'banked', 'best_streak', 'correct', 'cpm',
+    'elapsed', 'errors', 'finished', 'keystrokes', 'passed', 'paused', 'pos',
+    'progress', 'raw_wpm', 'standing', 'started', 'streak', 'total', 'wpm'],
     sort(keys(snap)))
+  assert_equal(0, snap.banked)
+  assert_equal(0, snap.passed)
 
   # total defaults to 0, and progress is 0.0 without a denominator.
   var empty = stats.Snapshot(stats.New(), 1.0)
@@ -491,3 +501,205 @@ def Test_initial_position()
 enddef
 
 Test_initial_position()
+
+def Test_pause_mid_run()
+  var s = stats.New({total: 10})
+  stats.Record(s, Correct('a', 1, 10, 1), 10.0)
+  stats.Record(s, Correct('b', 2, 10, 2), 11.0)
+  # 1 s of typing, then Pause closes the 1 s open gap: elapsed = 2 s.
+  stats.Pause(s, 12.0)
+  assert_equal(2.0, stats.Snapshot(s, 12.0).elapsed)
+  # The paused stretch is not counted.
+  assert_equal(2.0, stats.Snapshot(s, 500.0).elapsed)
+  # The first event after the Pause adds no gap, only resumes the clock.
+  stats.Record(s, Correct('c', 3, 10, 3), 600.0)
+  assert_equal(2.0, stats.Snapshot(s, 600.0).elapsed)
+  assert_false(stats.Snapshot(s, 600.0).paused)
+  # The next gap is timed again: 1 s.
+  stats.Record(s, Correct('d', 4, 10, 4), 601.0)
+  assert_equal(3.0, stats.Snapshot(s, 601.0).elapsed)
+  assert_equal(4, stats.Snapshot(s, 601.0).keystrokes)
+enddef
+
+def Test_pause_snapshot_while_resting()
+  var s = stats.New({total: 10})
+  stats.Record(s, Correct('a', 1, 10, 1), 0.0)
+  stats.Pause(s, 1.0)
+  var snap = stats.Snapshot(s, 1.0)
+  assert_equal(1.0, snap.elapsed)
+  assert_true(snap.paused, 'Snapshot while resting reports paused')
+  # The open gap never grows while resting.
+  assert_equal(1.0, stats.Snapshot(s, 50.0).elapsed)
+  assert_equal(1.0, stats.Snapshot(s, 5000.0).elapsed)
+  assert_true(stats.Snapshot(s, 5000.0).paused)
+enddef
+
+def Test_pause_open_gap_too_long()
+  var s = stats.New({idle_seconds: 5.0, total: 10})
+  stats.Record(s, Correct('a', 1, 10, 1), 0.0)
+  # 20 s > idle_seconds: nothing is added, but the clock still rests.
+  stats.Pause(s, 20.0)
+  var snap = stats.Snapshot(s, 20.0)
+  assert_equal(0.0, snap.elapsed)
+  assert_true(snap.paused)
+  stats.Record(s, Correct('b', 2, 10, 2), 21.0)
+  assert_equal(0.0, stats.Snapshot(s, 21.0).elapsed)
+  stats.Record(s, Correct('c', 3, 10, 3), 22.0)
+  assert_equal(1.0, stats.Snapshot(s, 22.0).elapsed)
+enddef
+
+def Test_pause_before_start()
+  var s = stats.New({total: 5})
+  stats.Pause(s, 5.0)
+  var snap = stats.Snapshot(s, 100.0)
+  assert_false(snap.started)
+  assert_false(snap.paused)
+  assert_equal(0.0, snap.elapsed)
+  # The first event still starts the clock normally.
+  stats.Record(s, Correct('a', 1, 5, 1), 100.0)
+  assert_true(stats.Snapshot(s, 100.0).started)
+  assert_equal(0.0, stats.Snapshot(s, 100.0).elapsed)
+  assert_equal(1.0, stats.Snapshot(s, 101.0).elapsed)
+enddef
+
+def Test_pause_twice()
+  var s = stats.New({total: 5})
+  stats.Record(s, Correct('a', 1, 5, 1), 0.0)
+  stats.Pause(s, 2.0)
+  assert_equal(2.0, stats.Snapshot(s, 2.0).elapsed)
+  # The second Pause changes nothing, even much later.
+  stats.Pause(s, 10.0)
+  assert_equal(2.0, stats.Snapshot(s, 100.0).elapsed)
+  stats.Record(s, Correct('b', 2, 5, 2), 11.0)
+  assert_equal(2.0, stats.Snapshot(s, 11.0).elapsed)
+  stats.Record(s, Correct('c', 3, 5, 3), 12.0)
+  assert_equal(3.0, stats.Snapshot(s, 12.0).elapsed)
+enddef
+
+def Test_pause_after_done()
+  var s = stats.New({total: 2})
+  stats.Record(s, Correct('a', 1, 2, 1), 0.0)
+  stats.Record(s, Correct('b', 2, 2, 2, true), 1.0)
+  stats.Pause(s, 5.0)
+  var snap = stats.Snapshot(s, 1000.0)
+  assert_equal(1.0, snap.elapsed)
+  assert_false(snap.paused)
+  assert_true(snap.finished)
+enddef
+
+def Test_jump_is_not_a_keystroke()
+  var s = stats.New({total: 20})
+  stats.Record(s, Correct('a', 1, 20, 1), 0.0)
+  stats.Record(s, Wrong('b', 'x', 1, 20, 1), 1.0)
+  stats.Record(s, Correct('b', 2, 20, 2), 2.0)
+  stats.Record(s, Jump(2, 10, 20, 8), 3.0)
+  var snap = stats.Snapshot(s, 3.0)
+  # Keystroke counters and the missed-key tallies are untouched.
+  assert_equal(3, snap.keystrokes)
+  assert_equal(2, snap.correct)
+  assert_equal(1, snap.errors)
+  assert_equal(1, snap.streak)
+  assert_equal(1, snap.best_streak)
+  Near(snap.accuracy, 2 * 100.0 / 3, 'accuracy after a jump')
+  assert_equal({'b': 1}, stats.MissedCounts(s))
+  assert_equal(3.0, snap.elapsed)
+  # Position values come from the jump; `lost` is banked.
+  assert_equal(10, snap.pos)
+  assert_equal(20, snap.total)
+  assert_equal(8, snap.standing)
+  assert_equal(50.0, snap.progress)
+  assert_equal(2, snap.banked)
+enddef
+
+def Test_banked_net_wpm()
+  var s = stats.New({idle_seconds: 100.0, total: 100})
+  stats.Record(s, Correct('a', 1, 100, 1), 0.0)
+  stats.Record(s, Correct('b', 2, 100, 2), 10.0)
+  stats.Record(s, Jump(3, 10, 100, 9), 20.0)
+  var snap = stats.Snapshot(s, 20.0)
+  assert_equal(20.0, snap.elapsed)
+  assert_equal(2, snap.keystrokes)
+  assert_equal(9, snap.standing)
+  assert_equal(3, snap.banked)
+  # Raw WPM still uses keystrokes only: 2 / 5 / (1/3) = 1.2.
+  Near(snap.raw_wpm, 1.2, 'raw_wpm ignores banked')
+  # Net WPM uses standing + banked: 12 / 5 / (1/3) = 7.2.
+  Near(snap.wpm, 7.2, 'wpm uses banked')
+  Near(snap.cpm, 36.0, 'cpm uses banked')
+enddef
+
+def Test_jumps_accumulate_banked()
+  var s = stats.New({total: 3})
+  stats.Record(s, Correct('a', 1, 3, 1), 0.0)
+  stats.Record(s, Jump(1, 1, 3, 0), 1.0)
+  stats.Record(s, Jump(2, 2, 3, 0), 2.0)
+  assert_equal(3, stats.Snapshot(s, 2.0).banked)
+  stats.Record(s, Jump(0, 2, 3, 0), 3.0)
+  assert_equal(3, stats.Snapshot(s, 3.0).banked)
+enddef
+
+def Test_passed_sequence()
+  var s = stats.New({total: 20})
+  assert_equal(0, stats.Snapshot(s, 0.0).passed)
+  # Correct: position advances -> +1.
+  stats.Record(s, Correct('a', 1, 20, 1), 0.0)
+  assert_equal(1, stats.Snapshot(s, 0.0).passed)
+  # Wrong in stay mode: position does not advance -> unchanged.
+  stats.Record(s, Wrong('b', 'x', 1, 20, 1), 1.0)
+  assert_equal(1, stats.Snapshot(s, 1.0).passed)
+  # Wrong in advance mode: position advances -> +1.
+  stats.Record(s, Wrong('b', 'x', 2, 20, 1), 2.0)
+  assert_equal(2, stats.Snapshot(s, 2.0).passed)
+  # Back -> -1.
+  stats.Record(s, Ev('back', '', '', 1, 20, 1), 3.0)
+  assert_equal(1, stats.Snapshot(s, 3.0).passed)
+  # Jump and ignored leave it unchanged.
+  stats.Record(s, Jump(5, 8, 20, 3), 4.0)
+  assert_equal(1, stats.Snapshot(s, 4.0).passed)
+  stats.Record(s, Ev('ignored'), 5.0)
+  assert_equal(1, stats.Snapshot(s, 5.0).passed)
+
+  # The starting pos option is the baseline for the first comparison.
+  var b = stats.New({pos: 3, total: 20})
+  stats.Record(b, Wrong('d', 'x', 3, 20, 0), 0.0)
+  assert_equal(0, stats.Snapshot(b, 0.0).passed)
+  stats.Record(b, Correct('d', 4, 20, 4), 1.0)
+  assert_equal(1, stats.Snapshot(b, 1.0).passed)
+enddef
+
+def Test_passed_never_negative()
+  var s = stats.New({total: 4})
+  stats.Record(s, Ev('back', '', '', 0, 4, 0), 0.0)
+  assert_equal(0, stats.Snapshot(s, 0.0).passed)
+  stats.Record(s, Ev('back', '', '', 0, 4, 0), 1.0)
+  assert_equal(0, stats.Snapshot(s, 1.0).passed)
+enddef
+
+def Test_jump_starts_clock()
+  var s = stats.New({total: 10})
+  stats.Record(s, Jump(0, 2, 10, 0), 5.0)
+  var snap = stats.Snapshot(s, 5.0)
+  assert_true(snap.started)
+  assert_false(snap.paused)
+  assert_equal(0.0, snap.elapsed)
+  assert_equal(0, snap.keystrokes)
+  assert_equal(2, snap.pos)
+  assert_equal(20.0, snap.progress)
+  assert_equal(0, snap.banked)
+  assert_equal(0.0, snap.wpm)
+  # Later gaps are timed from the jump.
+  assert_equal(1.0, stats.Snapshot(s, 6.0).elapsed)
+enddef
+
+Test_pause_mid_run()
+Test_pause_snapshot_while_resting()
+Test_pause_open_gap_too_long()
+Test_pause_before_start()
+Test_pause_twice()
+Test_pause_after_done()
+Test_jump_is_not_a_keystroke()
+Test_banked_net_wpm()
+Test_jumps_accumulate_banked()
+Test_passed_sequence()
+Test_passed_never_negative()
+Test_jump_starts_clock()

@@ -8,6 +8,8 @@ CONTENTS                                                    *typing-contents*
     Quick start                |typing-quickstart|
     Commands and mapping       |typing-commands|
     During a session           |typing-session|
+    Pausing and moving         |typing-pause|
+    Colours                    |typing-colours|
     What to type               |typing-text|
     Statistics                 |typing-statistics|
     Summary                    |typing-summary|
@@ -39,8 +41,10 @@ text file and run: >
     :TypingStart
 <
 Type the displayed text. Skip indentation and blank lines. At a line-end
-marker, press Space or Enter. Esc or Ctrl-C stops and opens the summary.
-Press r in the summary to restart, or any other key to return.
+marker, press Space or Enter. Esc pauses: move the cursor with ordinary Vim
+motions and press Enter to type from there, or Esc to carry on. To finish
+early press Esc then q, or Ctrl-C at any time; the summary opens. Press r in
+the summary to restart, or any other key to return.
 
 ==============================================================================
 COMMANDS AND MAPPING                                        *typing-commands*
@@ -58,9 +62,9 @@ is refused. If no targets remain after skipping whitespace and optional
 non-ASCII characters, the command reports "nothing to type".
 
                                                                *:TypingStop*
-:TypingStop             Stop typing and show the summary. If the summary is
-                        already open, close it. Cancel a resume prompt.
-                        If idle, report that there
+:TypingStop             Stop typing (also while paused) and show the
+                        summary. If the summary is already open, close it.
+                        Cancel a resume prompt. If idle, report that there
                         is no typing session.
 
                                                             *:TypingHistory*
@@ -98,17 +102,19 @@ The two error modes are selected by |g:typing_on_error|:
 
 Correct keys advance in both modes. Arrows, function keys, mouse events and
 other non-text control keys are ignored and not counted. Tab and Enter are
-judged, even when incorrect at the current position. Esc and Ctrl-C end the
-session and show the summary. Keys bypass user mappings: colon is typing
-input, not a command prompt. :TypingStop is also a programmatic stop command.
+judged, even when incorrect at the current position. Esc pauses the session
+(see |typing-pause|). Ctrl-C ends the session and shows the summary. Keys
+bypass user mappings: colon is typing input, not a command prompt.
+:TypingStop is also a programmatic stop command.
 
-Keys arriving during popup or tab transitions are swallowed. In a terminal,
-Esc is recognised only after Vim's key-code timeout: 'ttimeoutlen', or
-'timeoutlen' when 'ttimeoutlen' is -1 (up to one second with default
-settings). Ctrl-C stops immediately. To make Esc fast, put this in your
-vimrc: >
-    set ttimeout ttimeoutlen=50
-<
+While typing, and during popup or tab transitions, every key is swallowed:
+nothing reaches Normal mode except in the paused phase. In a terminal, Vim
+recognises Esc only after its key-code timeout, so for the session the
+plugin switches 'ttimeout' on and sets 'ttimeoutlen' to
+|g:typing_esc_timeout_ms| (50 ms by default), unless your 'ttimeoutlen' is
+already between 0 and that value. Both options are restored when the
+session ends, on every exit path. Set the option to 0 to leave them alone.
+
 Reaching the last target ends the session immediately, including a wrong
 last key in advance mode. Leaving the practice window, buffer or tab, or
 wiping the practice buffer, aborts without a summary and saves an unfinished
@@ -116,6 +122,68 @@ record under the normal history rules. Normal Vim shutdown does the same.
 Leaving during the summary closes it. Closing the summary returns to the
 original window if it still exists. Normal cleanup restores the terminal
 cursor before the summary; during practice the real cursor is hidden.
+
+==============================================================================
+PAUSING AND MOVING                                             *typing-pause*
+
+Esc while typing pauses the session, at the very start or midway. The clock
+stops, the position marker stops blinking and stays where typing would
+continue, the real cursor becomes visible on it, and the status popup shows:
+    PAUSED  move · Enter type here · Esc back · q finish
+
+    Key while paused       Effect ~
+    Any Vim motion         Moves the cursor in the practice buffer: j, k,
+                           w, }, gg, G, counts, /search and so on. The
+                           buffer stays nonmodifiable.
+    Enter or i             Type from the cursor: the first target at or
+                           after it becomes the current position.
+    Esc                    Back to typing at the position you left.
+    q                      End the session and show the summary.
+    Ctrl-C                 End the session and show the summary (also
+                           while typing).
+
+Only these four keys are taken by the session; every other key is executed
+by Vim as usual. Keys typed on the command line, in Visual mode or after an
+operator, the argument of a command such as f, t, m, " or g, and a key after
+a count are Vim's: "fi" finds an i, "3<Esc>" only cancels the count. Enter or
+i after a count cancels the count and then types from the cursor.
+
+Jumping forward marks the text in between as skipped: shown as typed, not
+counted. Jumping backward makes everything from the new position onward
+untyped again and clears its wrong and corrected marks. Keystrokes, errors
+and time already recorded stay, and characters that were standing as
+correct still count towards net WPM. A jump is not a keystroke. After a
+jump, Backspace in advance mode stops at the jump position. If there is
+nothing to type at or after the cursor, a message says so and the session
+stays paused.
+
+Time spent paused is not counted, and neither is the time before the first
+key after returning or after a jump. Leaving the practice tab, window or
+buffer while paused ends the session as it does while typing; so does any
+command that makes the practice window stop showing the practice buffer.
+
+==============================================================================
+COLOURS                                                      *typing-colours*
+
+The practice copy keeps the syntax highlighting of the original buffer, in
+your active colorscheme. It gets the original buffer's 'syntax' value, not
+its 'filetype', so no filetype plugin or FileType autocommand runs for it.
+Concealing is switched off in the practice window ('conceallevel' 0) so every
+character stays visible.
+
+Untyped text is a uniform grey, |hl-TypingPending|, drawn over the syntax
+colours. Typing a character correctly removes the grey and its original
+syntax colour appears. Wrong, corrected and cursor marks sit on top as
+before. Change the grey in your vimrc or colorscheme, for example: >
+    highlight TypingPending ctermfg=244 guifg=#808080
+<
+Syntax highlighting itself (":syntax on") and the colorscheme are your own
+settings; the plugin does not change them. If syntax highlighting is off,
+or the buffer has no syntax, typed text is in the Normal colour.
+
+A line range is highlighted from its first line, so constructs that began
+earlier in the file (a long comment or string) may be coloured differently
+than in the original buffer.
 
 ==============================================================================
 WHAT TO TYPE                                                   *typing-text*
@@ -154,7 +222,8 @@ STATISTICS                                               *typing-statistics*
 The status popup at the bottom right shows time, rounded net WPM, accuracy
 (to one decimal place), errors and rounded progress. It refreshes after a
 non-ignored input event and once a second. "paused" means the current gap is
-longer than |g:typing_idle_seconds|. CPM and raw WPM appear in the summary.
+longer than |g:typing_idle_seconds|. In the paused phase (|typing-pause|) it
+shows the key hint instead. CPM and raw WPM appear in the summary.
 
 Time            Starts on the first non-ignored event. Each later correct,
                 wrong or back event adds the gap since the previous event
@@ -163,6 +232,8 @@ Time            Starts on the first non-ignored event. Each later correct,
                 includes the open gap under the same rule. Thus displayed
                 time can decrease when an open gap exceeds the threshold.
                 Completion freezes time; stopping early snapshots it at stop.
+                Time in the paused phase is not counted; the first event
+                after it adds no gap.
                 Display uses MM:SS with fractional seconds dropped.
 Keystrokes      Correct plus wrong judged inputs. Backspace and ignored keys
                 are excluded. Retyping a target counts again.
@@ -171,7 +242,8 @@ Errors          Number of wrong judged inputs, not number of wrong targets.
 Accuracy        Correct / keystrokes * 100; 100% before any judged input.
 Standing        Targets currently correct or fixed. Backspace can reduce it.
 Raw WPM         Keystrokes * 60 / 5 / elapsed seconds.
-WPM (net)       Standing * 60 / 5 / elapsed seconds.
+WPM (net)       (Standing + banked) * 60 / 5 / elapsed seconds. Banked
+                are correct targets reset by a backward jump.
 CPM             Net WPM * 5. All three speeds are zero when elapsed is zero.
 Streak          Consecutive correct inputs. A wrong input resets it;
                 Backspace and ignored keys neither reset nor increase it.
@@ -196,7 +268,8 @@ For the first 500 ms after the summary appears, keys are swallowed so that
 extra typing cannot dismiss it or restart. Set |g:typing_summary_grace_ms|
 to change this grace period or disable it with 0.
 
-On completion, Esc, Ctrl-C or :TypingStop, a centred popup shows the result:
+On completion, q while paused, Ctrl-C or :TypingStop, a centred popup shows
+the result:
 time, net and raw WPM, CPM, accuracy, keystrokes, errors, longest streak,
 characters and most-missed keys. Space is displayed as ␣, Enter as ↵, and
 Tab as ⇥ in warnings and missed-key entries.
@@ -227,8 +300,10 @@ Record fields:
     file         Original filename tail only, or "[No Name]".
     line1,line2  Inclusive original line range, numbered from 1.
     duration     Timed seconds, as defined in |typing-statistics|.
-    start        Starting target index (zero unless resumed).
-    chars        Position minus start, including wrong targets in advance.
+    start        Target index where the session first started typing (zero
+                 unless resumed); jumps do not change it.
+    chars        Targets passed by typing, including wrong targets in
+                 advance mode; Backspace subtracts one. Jumps pass none.
     wpm          Net WPM.
     raw_wpm      Raw WPM.
     accuracy     Correct judged inputs as a percentage of all judged inputs.
@@ -252,12 +327,14 @@ lines and non-object values are skipped. Turning saving off does not prevent
 ==============================================================================
 RESUME                                                       *typing-resume*
 
-Stopping early on a named file saves the position if you moved beyond the
-session's starting point. Esc, Ctrl-C, :TypingStop and leaving the practice
-tab all save under this rule. Finishing the text deletes its saved position.
-Stopping without advancing preserves an existing entry. Unnamed buffers
-save nothing. A successful save adds "Position saved: line N (P%)" to the
-summary.
+Stopping early on a named file saves the current position if it differs
+from the session's starting point, forward or backward (after a jump, see
+|typing-pause|), and is not the very first target. Esc then q, Ctrl-C,
+:TypingStop and leaving the practice tab, while typing or paused, all save
+under this rule. Finishing the text deletes its saved position. Stopping
+where the session started, or at the first target, preserves an existing
+entry. Unnamed buffers save nothing. A successful save adds "Position
+saved: line N (P%)" to the summary.
 
 The next :TypingStart on the same absolute file path and line range offers
 "Resume at line N (P%)" or "Start from the beginning". Use j/k or the arrow
@@ -322,6 +399,13 @@ g:typing_skip_non_ascii     Boolean, default v:false.
 g:typing_blink_ms           Number, default 500.
     Blink half-period in milliseconds. Zero or negative gives a steady marker.
 
+                                                   *g:typing_esc_timeout_ms*
+g:typing_esc_timeout_ms     Number, default 50.
+    Key-code timeout in milliseconds used during a session so that Esc
+    registers at once: 'ttimeout' is set and 'ttimeoutlen' gets this value
+    unless it is already between 0 and this value. Both are restored when
+    the session ends. 0 leaves the options alone. Read at session start.
+
                                                  *g:typing_summary_grace_ms*
 g:typing_summary_grace_ms   Number, default 500.
     Ignore summary keys for this many milliseconds after it appears.
@@ -371,7 +455,8 @@ Define your own groups in your vimrc or colorscheme; the defaults do not
 replace existing definitions. Attributes not listed below are unspecified.
 
                                                          *hl-TypingPending*
-TypingPending     Pending text and accepted line-end markers.
+TypingPending     Pending (untyped) text over the syntax colours, and
+                  accepted line-end markers. See |typing-colours|.
                   ctermfg=242 guifg=#6c6c6c
                                                            *hl-TypingWrong*
 TypingWrong       Wrong targets.

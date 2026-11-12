@@ -27,6 +27,9 @@ def Test_engine_stats_stay()
   assert_equal({elapsed: 4.0, keystrokes: 5, correct: 4, errors: 1,
     accuracy: 80.0, raw_wpm: 15.0, wpm: 12.0, cpm: 60.0,
     streak: 4, best_streak: 4, pos: 4, total: 4, standing: 4,
+    # The wrong 'x' does not advance (stay mode); a, b, the break and c do.
+    # No jump, so nothing is banked.
+    banked: 0, passed: 4,
     progress: 100.0, started: true, paused: false, finished: true}, snap)
   assert_equal('fixed', st.targets[0].state)
   assert_equal([{char: 'a', misses: 1, attempts: 2, typed: [['x', 1]]}],

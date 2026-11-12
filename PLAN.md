@@ -147,8 +147,11 @@ keys) and a one-line WPM trend.
 When a session on a named file stops before the end of the text, the position
 is saved. The next `:TypingStart` on that file offers to continue from there.
 
-- **Saved when** a session ends early (Esc, Ctrl-C, `:TypingStop`, leaving the
-  practice tab) and the position moved beyond where the session started.
+- **Saved when** a session ends early (`q` while paused, Ctrl-C,
+  `:TypingStop`, leaving the practice tab) at a position that differs from
+  where the session started and is not the very first character. A session
+  that ends where it started, or at the top, leaves any saved position as it
+  was.
   Finishing the text deletes the saved position. Buffers without a file name
   save nothing.
 - **Where**: one JSON file, `g:typing_progress_file` (default
@@ -172,6 +175,53 @@ is saved. The next `:TypingStart` on that file offers to continue from there.
   `'never'` (neither save nor offer). `:TypingStart!` starts from the
   beginning without asking.
 
+### Original colours (requested 2026-11-11)
+
+The practice copy keeps the syntax highlighting of the original buffer, in
+whatever colorscheme is active (molokai, for example).
+
+- The practice buffer gets the origin's `'syntax'` value (not its `'filetype'`,
+  so no filetype plugins or autocommands run). Concealing is switched off in
+  the practice window so every character stays visible.
+- Untyped text is a uniform grey (`TypingPending`): its property does not
+  combine with syntax colours. Typing a character correctly removes the grey
+  and its original syntax colour appears.
+- Wrong, corrected and cursor marks sit on top as before.
+- If syntax highlighting is off, or the buffer has no syntax, typed text is in
+  the Normal colour as before.
+- A line range is highlighted from its first line, so constructs that began
+  earlier in the file (a long comment or string) may be coloured differently.
+
+### Moving to another position (requested 2026-11-11)
+
+Esc no longer ends the session. It pauses it so the cursor can be moved, at
+the very start or in the middle.
+
+| Key while paused | Effect |
+| --- | --- |
+| Any Vim motion (`j`, `k`, `w`, `}`, `gg`, `G`, counts, `/search` …) | Moves the real cursor in the practice buffer. The buffer stays read-only. |
+| Enter or `i` | Type from the cursor: the first character at or after it becomes the current position. |
+| Esc | Back to typing at the position you left. |
+| `q` | End the session and show the summary. |
+| Ctrl-C | End the session and show the summary (also while typing, as before). |
+
+- While paused the terminal cursor is visible, the position marker stops
+  blinking and stays where typing would continue, the clock is stopped, and
+  the status popup shows the keys above.
+- Jumping forward marks the text in between as skipped: shown as typed, not
+  counted. Jumping backward makes everything from the new position onward
+  untyped again; its wrong/corrected marks are cleared. Keystrokes, errors and
+  time already recorded stay, and characters that were standing as correct
+  still count towards net WPM.
+- After a jump, Backspace in `advance` mode stops at the jump position.
+- If there is nothing to type at or after the cursor, a message says so and the
+  session stays paused.
+- Leaving the practice tab while paused ends the session as it does while
+  typing. `:TypingStop` works in every phase.
+- Esc is made responsive for the session: `'ttimeout'`/`'ttimeoutlen'` are set
+  to `g:typing_esc_timeout_ms` (default 50; 0 leaves them alone) and restored
+  on every exit path.
+
 ### Options
 
 | Option | Default | Meaning |
@@ -185,6 +235,7 @@ is saved. The next `:TypingStart` on that file offers to continue from there.
 | `g:typing_idle_seconds` | `5` | Gaps longer than this are not timed. |
 | `g:typing_resume` | `'ask'` | `'ask'`, `'always'` or `'never'`; see Resume. |
 | `g:typing_progress_file` | `~/.vim/typing-practice/progress.json` | Where resume positions are saved. |
+| `g:typing_esc_timeout_ms` | `50` | Key-code timeout used during a session so Esc registers quickly. `0` leaves Vim's setting alone. |
 | `g:typing_summary_grace_ms` | `500` | Keys are ignored for this long after the summary appears. `0` disables. |
 | `g:typing_history` | `true` | Save sessions. |
 | `g:typing_history_file` | `~/.vim/typing-practice/history.jsonl` | Where sessions are saved. |
@@ -408,7 +459,10 @@ SetClock(F: func(): float)       # tests inject a clock; default reltimefloat(re
 ```
 
 Options are read once at `Start`: those in section 4 plus
-`g:typing_history_min_keys` (20). Phases: `idle`, `typing`, `summary`.
+`g:typing_history_min_keys` (20). Phases: `idle`, `prompt`, `typing`,
+`paused`, `summary`. Since M7, Esc while typing pauses instead of finishing;
+see "Colours and pause additions (M7)" below, which supersedes the Esc
+behaviour described in this list.
 
 - **Start**: refused while a session is active. Takes the lines of the current
   buffer, builds the engine state, and returns with "nothing to type" (opening
@@ -441,6 +495,61 @@ Options are read once at `Start`: those in section 4 plus
 
 `State()` keys: `phase`, `buf`, `winid`, `tabnr`, `origin_winid`, `st`, `stats`,
 `status_id`, `summary_id`, `lines`, `last_record`, `last_saved`, `last_summary`.
+
+#### Colours and pause additions (M7)
+
+engine.vim:
+
+```
+IndexAt(st: dict<any>, lnum: number, col: number): number   # byte col; -1 if none
+Jump(st: dict<any>, index: number): dict<any>               # event of kind 'jump'
+```
+
+`IndexAt` returns the first target that contains or follows the position: on
+line `lnum` the first target with `col + max(len, 1) > col_arg`, otherwise the
+first target on a later line. `Jump` (valid for `0 <= index < len(targets)`,
+otherwise an `ignored` event): targets before `index` that are `pending`
+become `skipped`; targets from `index` on become `pending` and lose `missed`;
+`pos` and `start` become `index`; `standing` is recounted for the targets
+before `index`; `done` is false. The event has `kind: 'jump'`, `changed: []`
+(the caller re-renders everything), `lost` = the number of `correct`/`fixed`
+targets that were reset, and the usual `pos`, `total`, `standing`, `done`.
+
+stats.vim:
+
+```
+Pause(s: dict<any>, now: float)   # close the open gap under the idle rule; the next event adds no gap
+```
+
+A `jump` event is not a keystroke; `lost` is added to a banked count so net
+WPM uses `standing + banked`. Snapshots gain `passed` (targets passed by
+typing: +1 when a `correct`/`wrong` event advances, −1 on `back`) and
+`banked`. History `chars` becomes `passed`; `start` stays the position where
+the session first started typing.
+
+render.vim: the pending property type is created with `combine: false`.
+`Setup` remains the way to re-render after a jump.
+
+render.vim, found during M7: the character cursor property type is also
+`combine: false`. Vim lets the highest-priority property on a cell decide
+whether syntax attributes are kept, so a combining cursor would show the
+syntax bold in the blink's "off" phase. Side effect: a wrong character under
+the cursor shows without the syntax bold/italic.
+
+session.vim, pending commands while paused: keys pass through untouched when
+Vim is not in plain Normal mode (command line, Visual, operator-pending) and
+for the key after a prefix such as `f`, `t`, `g`, `'`, so `fi` and `fq` stay
+motions. A count before Enter, `i` or `q` is cancelled first.
+
+session.vim: the practice buffer gets `&l:syntax` from the origin; the window
+gets `conceallevel=0`. New phase `'paused'`. Esc while typing →
+`stats.Pause`, `render.StopBlink`, `render.RestoreTerminalCursor`, status hint,
+and the key filter passes keys through to Vim (returns false) except Enter,
+`i`, Esc and `q`. Enter/`i` → `engine.IndexAt` at the practice window's
+cursor, `engine.Jump`, `stats.Record`, `render.Setup`, back to typing. Esc →
+back to typing with the real cursor returned to `render.CursorPos`. `q` →
+`Finish(false)`. The key-code timeout is saved, set and restored by the
+session together with the terminal cursor.
 
 #### Key sink across transitions (added 2026-11-11)
 
@@ -495,8 +604,8 @@ and `path`. History records add `start`, and `chars` becomes `pos - start`.
 ## 6. Milestones
 
 Each milestone ends with `./test/run.sh` passing and a check in a real
-terminal. State as of 2026-11-11: M0–M4 and M6 implemented and checked; M5 partly
-done. Checks actually performed are recorded in
+terminal. State as of 2026-11-11: M0–M4, M6 and M7 implemented and checked; M5
+partly done. Checks actually performed are recorded in
 [PROJECT_GUIDE.md](PROJECT_GUIDE.md).
 
 | # | Scope | Done when |
@@ -508,6 +617,7 @@ done. Checks actually performed are recorded in
 | M4 ✔ | Most-missed keys, history file, `:TypingHistory`. | A session appends one valid JSON line to a temporary history file; the viewer renders a fixture file; a corrupt line is skipped without an error. |
 | M5 (partly) | Ranges and visual selection, long-line wrapping, window resize, colorscheme change, `doc/typing.txt`, README usage, install into `~/.vim/pack`. | `:help typing-practice` works; a manual pass on a real prose file and a real terminal resize. **Done:** ranges, Visual `<Plug>` mapping, wrapping options, help file, README. **Open:** real resize and colorscheme-change checks, large-file timing, installation (only on request). |
 | M6 ✔ | Resume from the saved position (section 4 "Resume"). | Tests for `progress.vim`, `engine.StartAt`, and the session flows: ask → resume, ask → start over, cancel, `always`, `never`, bang, changed text, different range, finishing clears the entry, an unnamed buffer saves nothing. A real-terminal run: stop midway, start again, pick resume, finish. |
+| M7 ✔ | Original syntax colours; Esc pauses to move the cursor and type from another position. | Tests for `engine.IndexAt`/`Jump`, `stats.Pause` and the banked count, the non-combining pending property, and the session flows (pause at start and midway, jump forward and backward, Esc back, `q`, Ctrl-C, nothing at cursor, leaving the tab while paused, timeout option saved and restored). Real-terminal runs with a built-in colorscheme and with a pause-move-type sequence. |
 
 Backlog, not planned: a strict mode for source code (type indentation, Enter
 only), per-word statistics, generated drills from your most-missed keys,

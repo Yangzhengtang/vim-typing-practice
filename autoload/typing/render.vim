@@ -50,14 +50,20 @@ def CursorOff()
 enddef
 
 def AddTypes(buf: number)
+  # Untyped text is a uniform grey: the pending property replaces the syntax
+  # colour of the text it covers instead of combining with it.
   prop_type_add(TYPE_PENDING, {bufnr: buf, highlight: 'TypingPending',
-    priority: 10})
+    priority: 10, combine: false})
   prop_type_add(TYPE_FIXED, {bufnr: buf, highlight: 'TypingFixed',
     priority: 20})
   prop_type_add(TYPE_WRONG, {bufnr: buf, highlight: 'TypingWrong',
     priority: 30})
+  # Vim keeps or drops the syntax colour according to the highest-priority
+  # property on a cell, and an empty (blink "off") group still counts.  If the
+  # cursor combined, the syntax bold would leak through the pending grey under
+  # it; not combining, it shows only the properties beneath it.
   prop_type_add(TYPE_CURSOR, {bufnr: buf, highlight: 'TypingCursorBlink',
-    priority: 40})
+    priority: 40, combine: false})
   prop_type_add(TYPE_BREAK_PENDING, {bufnr: buf, highlight: 'TypingPending',
     priority: 10})
   prop_type_add(TYPE_BREAK_CORRECT, {bufnr: buf, highlight: 'TypingPending',

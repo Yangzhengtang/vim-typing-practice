@@ -13,6 +13,7 @@ export def New(opts: dict<any> = {}): dict<any>
     started: false,
     last: 0.0,
     frozen: false,
+    resting: false,
     keystrokes: 0,
     correct: 0,
     errors: 0,
@@ -21,6 +22,8 @@ export def New(opts: dict<any> = {}): dict<any>
     pos: get(opts, 'pos', 0),
     total: get(opts, 'total', 0),
     standing: 0,
+    banked: 0,
+    passed: 0,
     finished: false,
     attempts: {},
     misses: {},
@@ -29,27 +32,34 @@ export def New(opts: dict<any> = {}): dict<any>
 enddef
 
 # Consume one event from engine.Feed. `ignored` events change nothing at all;
-# `back` moves the clock but is not a keystroke; `correct` and `wrong` are.
+# `back` moves the clock but is not a keystroke; `correct` and `wrong` are;
+# `jump` moves the clock and adds its `lost` count to the banked characters.
 export def Record(s: dict<any>, ev: dict<any>, now: float): void
   var kind = get(ev, 'kind', 'ignored')
-  if kind != 'correct' && kind != 'wrong' && kind != 'back'
+  if kind != 'correct' && kind != 'wrong' && kind != 'back' && kind != 'jump'
     return
   endif
 
   # Clock: it starts at the first non-ignored event; each later event adds the
-  # gap since the previous one only when that gap is at most idle_seconds.
+  # gap since the previous one only when that gap is at most idle_seconds. The
+  # first event after a Pause only ends the rest and adds nothing.
   if !s.started
     s.started = true
     s.last = now
   elseif !s.frozen
-    var gap: float = now - s.last
-    if gap >= 0.0 && gap <= s.idle_seconds
-      s.elapsed += gap
+    if s.resting
+      s.resting = false
+    else
+      var gap: float = now - s.last
+      if gap >= 0.0 && gap <= s.idle_seconds
+        s.elapsed += gap
+      endif
     endif
     s.last = now
   endif
 
   # Progress values come from the most recent non-ignored event.
+  var prev_pos: number = s.pos
   s.pos = get(ev, 'pos', s.pos)
   s.total = get(ev, 'total', s.total)
   s.standing = get(ev, 'standing', s.standing)
@@ -78,32 +88,68 @@ export def Record(s: dict<any>, ev: dict<any>, now: float): void
       s.typed[expected] = tally
     endif
   endif
+
+  if kind == 'jump'
+    s.banked += get(ev, 'lost', 0)
+  endif
+
+  # Targets passed by typing: the position advanced or a back key was pressed.
+  if kind == 'correct' || kind == 'wrong'
+    if s.pos > prev_pos
+      s.passed += 1
+    endif
+  elseif kind == 'back'
+    s.passed = s.passed > 0 ? s.passed - 1 : 0
+  endif
+enddef
+
+# Stop the clock: close the open gap under the idle rule, then leave the clock
+# resting so neither Snapshot nor a later event adds the paused time.
+export def Pause(s: dict<any>, now: float): void
+  if !s.started || s.frozen || s.resting
+    return
+  endif
+  var gap: float = now - s.last
+  if gap < 0.0
+    gap = 0.0
+  endif
+  if gap <= s.idle_seconds
+    s.elapsed += gap
+  endif
+  s.resting = true
+  s.last = now
 enddef
 
 export def Snapshot(s: dict<any>, now: float): dict<any>
   var elapsed: float = s.elapsed
   var paused = false
   if s.started && !s.frozen
-    # The open gap follows the same rule; a gap longer than idle_seconds is not
-    # added and leaves the session paused instead.
-    var gap: float = now - s.last
-    if gap < 0.0
-      gap = 0.0
-    endif
-    if gap <= s.idle_seconds
-      elapsed += gap
-    else
+    if s.resting
+      # Paused: the clock stands still, no open gap is added.
       paused = true
+    else
+      # The open gap follows the same rule; a gap longer than idle_seconds is
+      # not added and leaves the session paused instead.
+      var gap: float = now - s.last
+      if gap < 0.0
+        gap = 0.0
+      endif
+      if gap <= s.idle_seconds
+        elapsed += gap
+      else
+        paused = true
+      endif
     endif
   endif
 
   var keystrokes: number = s.keystrokes
   var correct: number = s.correct
   var standing: number = s.standing
+  var banked: number = s.banked
   var total: number = s.total
   var accuracy: float = keystrokes == 0 ? 100.0 : correct * 100.0 / keystrokes
   var raw_wpm: float = elapsed == 0.0 ? 0.0 : keystrokes * 60.0 / 5.0 / elapsed
-  var wpm: float = elapsed == 0.0 ? 0.0 : standing * 60.0 / 5.0 / elapsed
+  var wpm: float = elapsed == 0.0 ? 0.0 : (standing + banked) * 60.0 / 5.0 / elapsed
   var cpm: float = wpm * 5.0
   var progress: float = total == 0 ? 0.0 : s.pos * 100.0 / total
 
@@ -121,6 +167,8 @@ export def Snapshot(s: dict<any>, now: float): dict<any>
     pos: s.pos,
     total: total,
     standing: standing,
+    banked: banked,
+    passed: s.passed,
     progress: progress,
     started: s.started,
     paused: paused,
